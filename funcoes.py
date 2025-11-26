@@ -80,7 +80,7 @@ def compute_pca_factor_returns(returns: pd.DataFrame, window_pca: int = 60, n_fa
         # std dos ativos válidos na janela, para construir w_j
         sigma_w = Rw.std(ddof=1)
 
-        # retornos do dia t (precisamos de todos válidos nos ativos escolhidos)
+        # retornos do dia t
         Rt = returns.loc[t, Zw.columns]
         if Rt.isnull().any():
             continue
@@ -202,7 +202,6 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
         sigma_eq_map[stock] = sigma_eq
         betas_t[stock] = beta
         X_T_map[stock] = X_T
-        #s_t.loc[stock] = (X_T - m) / sigma_eq
 
     if not m_map:
         return s_t, betas_t  # vazio
@@ -210,12 +209,12 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
     # centralização cross-sectional
     m_bar = np.mean(list(m_map.values()))
     for stock, m in m_map.items():
-        s_val = -(m - m_bar) / sigma_eq_map[stock]  # melhor até agora
-        s_val2 = (X_T_map[stock] - m) / sigma_eq_map[stock]  # s_score do paper
-        s_val3 = (X_T_map[stock] - m_bar) / sigma_eq_map[stock] # substituindo pelo m_barra
+        m_centered = m - m_bar
+        s_val = (X_T_map[stock] - m) / sigma_eq_map[stock]  # s_score do paper
+        s_val2 = (X_T_map[stock] - m_centered) / sigma_eq_map[stock] # s_score do paper centralizado (melhor)
 
-        if np.isfinite(s_val):
-            s_t.loc[stock] = s_val
+        if np.isfinite(s_val2):
+            s_t.loc[stock] = s_val2
 
     return s_t, betas_t
 
