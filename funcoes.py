@@ -370,6 +370,7 @@ def pca_portfolio_spy(
     sbc: float = 0.75,
     ssc: float = 0.50,
     eps_cost: float = 0.0005,
+    rebalanceamento_dias: int = 1,
     plot: bool = True,
 ):
     
@@ -379,7 +380,7 @@ def pca_portfolio_spy(
     
     pcs = [f"eig{i+1}" for i in range(num_pc)]
     stocks = [c for c in returns.columns]
-    usable_index = returns.iloc[252:].index
+    usable_index = returns.iloc[s_win:].index
 
     # tabelas
     s_scores = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
@@ -416,12 +417,31 @@ def pca_portfolio_spy(
         if prev.isna().all():
             prev = pd.Series(0.0, index=stocks) #caso inicial
 
-        new_pos = []
-        for stock in stocks:
-            s_val = s_t.get(stock, np.nan)
-            new_pos.append(position_from_s(s=s_val,pos_prev=prev.get(stock, 0.0),sbo=sbo, sso=sso, sbc=sbc, ssc=ssc))
+        # --- REBALANCEAMENTO A CADA x DIAS ÚTEIS ---
+        day_idx = algo_pos.index.get_loc(t)
+
+        if day_idx % rebalanceamento_dias == 0:
+            # recalcula posições
+            new_pos = []
+            for stock in stocks:
+                s_val = s_t.get(stock, np.nan)
+                new_pos.append(position_from_s(
+                    s=s_val,
+                    pos_prev=prev.get(stock, 0.0),
+                    sbo=sbo, sso=sso, sbc=sbc, ssc=ssc
+                ))
+            algo_pos.loc[t] = new_pos
+
+        else:
+            # mantém a posição anterior (sem trades)
+            algo_pos.loc[t] = prev
+
+        # new_pos = []
+        # for stock in stocks:
+        #     s_val = s_t.get(stock, np.nan)
+        #     new_pos.append(position_from_s(s=s_val,pos_prev=prev.get(stock, 0.0),sbo=sbo, sso=sso, sbc=sbc, ssc=ssc))
         
-        algo_pos.loc[t] = new_pos
+        # algo_pos.loc[t] = new_pos
 
     # remove linhas sem s-score algum
     null_idx = s_scores.index[s_scores.isnull().all(axis=1)]
@@ -448,7 +468,7 @@ def pca_portfolio_spy(
     )
 
     # comparação com SPY (buy&hold em retorno simples)
-    spy = returns_spy.iloc[252:].copy()
+    spy = returns_spy.iloc[s_win:].copy()
     cumret_spy = (1.0 + spy).cumprod()
 
     if plot:
