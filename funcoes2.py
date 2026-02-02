@@ -100,63 +100,6 @@ def compute_pca_factor_returns(returns: pd.DataFrame, window_pca: int = 60, n_fa
 
     return F.dropna(how="all")
 
-def compute_pca_factors_and_Qmap(
-    returns: pd.DataFrame,
-    window_pca: int = 60,
-    n_factors: int = 15,
-):
-    """
-    Para cada dia t (a partir de window_pca):
-      - usa janela [t-window_pca, t)
-      - faz PCA na correlação
-      - monta eigenportfolio Q^{(j)}(t) = v^{(j)} / sigma
-      - normaliza Q^{(j)} por gross: sum(|Q|)=1
-      - calcula fator F_j(t) = R_t · Q^{(j)}(t)
-
-    Retorna:
-      F: DataFrame [date x pcs]
-      Q_map: dict[date] -> DataFrame [stocks x pcs]
-    """
-    dates = returns.index
-    pcs = [f"eig{i+1}" for i in range(n_factors)]
-
-    F = pd.DataFrame(index=dates, columns=pcs, dtype=float)
-    Q_map: dict[pd.Timestamp, pd.DataFrame] = {}
-
-    for i in range(window_pca, len(dates)):
-        t_hist = dates[i - window_pca : i]   # [t-60, t)
-        t = dates[i]
-
-        Rw = returns.loc[t_hist]
-        Zw = padronizar_janela(Rw).dropna(axis=1, how="any")
-        Zw = Zw.dropna(axis=0, how="all")
-
-        if Zw.shape[1] < n_factors + 1:
-            continue
-
-        # PCA na correlação
-        _, evecs = decompor_corr(Zw)
-
-        sigma_w = Rw[Zw.columns].std(ddof=1).replace(0, np.nan)
-        Rt = returns.loc[t, Zw.columns]
-        if Rt.isnull().any():
-            continue
-
-        Q_t = pd.DataFrame(index=Zw.columns, columns=pcs, dtype=float)
-
-        for j in range(n_factors):
-            vj = pd.Series(evecs[:, j], index=Zw.columns)
-            qj = (vj / sigma_w).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-            # normaliza eigenportfolio por gross (=1)
-            qj = normalizar_pesos(qj)
-
-            Q_t.iloc[:, j] = qj.values
-            F.loc[t, pcs[j]] = float(Rt.dot(qj))
-
-        Q_map[t] = Q_t
-
-    return F.dropna(how="all"), Q_map
 
 # =============================================================================
 # OU e s-score (com centralização cross-sectional do m)
@@ -384,88 +327,6 @@ def hedge_from_betas(
     hedge = pd.DataFrame(hedge_rows, index=common_idx, columns=pcs)
     return hedge
 
-
-def project_to_factor_neutral(
-    w_stocks: pd.DataFrame,     # [date x stocks]
-    betas: pd.DataFrame,        # [date x stocks] cada célula np.ndarray len(pcs)
-    stocks: list[str],
-    pcs: list[str],
-    ridge: float = 1e-6,        # estabiliza inversão de B'B
-    enforce_dollar_neutral: bool = False,
-    zero_out_invalid: bool = True,
-):
-    """
-    Hedge direto NAS AÇÕES via projeção no espaço dos fatores.
-
-    Por dia, encontra w_eff = w + δw tal que:
-      w_eff^T B = 0   (neutraliza exposição aos PCs medida pelos betas)
-    com δw de norma mínima (solução LS fechada).
-
-    λ = (B^T B + ridge I)^(-1) (B^T w)
-    δw = - B λ
-    w_eff = w + δw
-
-    Importante: usa SOMENTE as ações com betas válidos naquele dia.
-    """
-    idx = w_stocks.index.intersection(betas.index)
-    W = w_stocks.reindex(idx, columns=stocks).fillna(0.0)
-    Bdf = betas.reindex(idx, columns=stocks)
-
-    m = len(pcs)
-    I = np.eye(m)
-
-    def clean_cell(v):
-        if isinstance(v, np.ndarray) and v.shape == (m,) and np.isfinite(v).all():
-            return v.astype(float)
-        return np.full(m, np.nan, dtype=float)  # <- NaN para facilitar filtro
-
-    # cada célula vira vetor (m,) ou NaNs
-    Bdf = Bdf.apply(lambda col: col.map(clean_cell))
-
-    w_eff = pd.DataFrame(index=idx, columns=stocks, dtype=float)
-
-    for dt in idx:
-        w = W.loc[dt, stocks].values.astype(float)  # (n,)
-        b_row = Bdf.loc[dt, stocks].to_list()
-        B = np.vstack(b_row)                        # (n x m)
-
-        # linhas válidas: betas finitos e não-zero
-        valid = np.isfinite(B).all(axis=1) & (np.linalg.norm(B, axis=1) > 0)
-
-        # precisa ter "informação" suficiente para neutralizar m fatores
-        if valid.sum() < m:
-            w2 = w.copy()
-            if zero_out_invalid:
-                w2[~valid] = 0.0
-            if enforce_dollar_neutral:
-                w2 = w2 - np.mean(w2)
-            w_eff.loc[dt] = w2
-            continue
-
-        wv = w[valid]        # (n_valid,)
-        Bv = B[valid, :]     # (n_valid x m)
-
-        # λ = (B'B + ridge I)^(-1) (B'w)
-        BtB = Bv.T @ Bv
-        Btw = Bv.T @ wv
-        lam = np.linalg.solve(BtB + ridge * I, Btw)  # (m,)
-
-        # δw apenas nas ações válidas
-        delta_v = -Bv @ lam                           # (n_valid,)
-        w2 = w.copy()
-        w2[valid] = wv + delta_v
-
-        if zero_out_invalid:
-            w2[~valid] = 0.0
-
-        if enforce_dollar_neutral:
-            w2 = w2 - np.mean(w2)
-
-        w_eff.loc[dt] = w2
-
-    return w_eff
-
-
 def normalize_gross(w_all: pd.DataFrame, gross_target: float = 1.0):
     """
     Normaliza linha-a-linha para que ∑|w_i| = gross_target (por padrão =1).
@@ -508,12 +369,103 @@ def compute_pnl_with_costs(
 
     return ret_net, cumret, turnover
 
+def compute_pca_factor_returns_adaptive(
+    returns: pd.DataFrame,
+    window_pca: int = 60,
+    variance_target: float = 0.60,
+    min_factors: int = 5,
+    max_factors: int = 35,
+):
+    """
+    PCA com número ADAPTATIVO de fatores baseado em variância explicada.
+    
+    Retorna
+    -------
+    Factor_PCA : DataFrame [date x eig1, eig2, ..., eig_max]
+        Colunas além de num_factors_t ficam NaN
+    num_factors_used : Series [date]
+        Número de fatores usados em cada dia
+    """
+    dates = returns.index
+    F = pd.DataFrame(index=dates, columns=[f"eig{i+1}" for i in range(max_factors)], dtype=float)
+    num_factors_series = pd.Series(index=dates, dtype=int)
+    
+    for i in range(window_pca, len(dates)):
+        t_hist = dates[i - window_pca : i]
+        t = dates[i]
+        
+        Rw = returns.loc[t_hist]
+        Zw = padronizar_janela(Rw)
+        Zw = Zw.dropna(axis=1, how='any').dropna(axis=0, how='all')
+        
+        if Zw.shape[1] < min_factors + 1:
+            continue
+        
+        # PCA
+        evals, evecs = decompor_corr(Zw)
+        
+        # Determinar número de fatores para este dia
+        var_cumsum = np.cumsum(evals) / np.sum(evals)
+        n_factors = np.argmax(var_cumsum >= variance_target) + 1
+        n_factors = np.clip(n_factors, min_factors, max_factors)
+        
+        num_factors_series.loc[t] = n_factors
+        
+        # std dos ativos
+        sigma_w = Rw[Zw.columns].std(ddof=1).replace(0, np.nan)
+        Rt = returns.loc[t, Zw.columns]
+        
+        if Rt.isnull().any():
+            continue
+        
+        # Calcular retornos apenas dos n_factors primeiros
+        for j in range(n_factors):
+            vj = pd.Series(evecs[:, j], index=Zw.columns)
+            raw = vj / sigma_w
+            raw = raw.replace([np.inf, -np.inf], np.nan).dropna()
+            
+            if raw.empty:
+                continue
+            
+            wj = raw.reindex(Zw.columns).fillna(0.0)
+            wj = normalizar_pesos(wj)
+            
+            F.loc[t, f"eig{j+1}"] = float(Rt.dot(wj))
+    
+    return F.dropna(how="all"), num_factors_series.dropna()
+
+def compute_stock_specific_thresholds(
+    s_scores_hist: pd.DataFrame,
+    window: int = 252,
+    percentile_open: float = 0.15,
+    percentile_close_short: float = 0.35,
+    percentile_close_long: float = 0.45,
+    min_sbo: float = 1.0,
+    min_sso: float = 1.0,
+    min_sbc: float = 0.6,
+    max_ssc: float = -0.4,
+):
+    """
+    Calcula thresholds adaptativos específicos para cada ação.
+    """
+    # Percentis rolling por ação (coluna a coluna)
+    sbo = s_scores_hist.rolling(window, min_periods=60).quantile(percentile_open).abs()
+    sso = s_scores_hist.rolling(window, min_periods=60).quantile(1 - percentile_open)
+    sbc = s_scores_hist.rolling(window, min_periods=60).quantile(1 - percentile_close_short)
+    ssc = -s_scores_hist.rolling(window, min_periods=60).quantile(percentile_close_long)
+    
+    # Aplicar limites mínimos/máximos
+    sbo = sbo.clip(lower=min_sbo).fillna(1.25)
+    sso = sso.clip(lower=min_sso).fillna(1.25)
+    sbc = sbc.clip(lower=min_sbc).fillna(0.75)
+    ssc = ssc.clip(upper=max_ssc).fillna(-0.50)
+    
+    return {'sbo': sbo, 'sso': sso, 'sbc': sbc, 'ssc': ssc}
 
 # =============================================================================
 # Função principal (backtest) sem comentário - mais rápida
 # =============================================================================
-
-def pca_portfolio_spy2(
+def pca_portfolio_spy_hedge(
     returns: pd.DataFrame,
     returns_spy: pd.DataFrame,
     num_pc: int = 15,
@@ -634,267 +586,467 @@ def pca_portfolio_spy(
     returns_spy: pd.DataFrame,
     num_pc: int = 15,
     s_win: int = 60,
+    # thresholds do paper:
     sbo: float = 1.25,
     sso: float = 1.25,
-    sbc: float = 0.75,
+    sbc: float = 0.50,
     ssc: float = 0.50,
     eps_cost: float = 0.0005,
     rebalanceamento_dias: int = 1,
     plot: bool = True,
-    debug: bool = True,
 ):
-    # -------------------------------------------------------------------------
-    # 1) PCA: retorna fatores F(t) e eigenportfolios Q(t)
-    # -------------------------------------------------------------------------
+    
+    # Fatores PCA (rolling) com janela de 60 dias
     Factor_PCA = compute_pca_factor_returns(
-        returns, window_pca=s_win, n_factors=num_pc
-    )
-
+    returns, window_pca=60, n_factors=num_pc)
+    
     pcs = [f"eig{i+1}" for i in range(num_pc)]
-    stocks = list(returns.columns)
+    stocks = [c for c in returns.columns]
     usable_index = returns.iloc[s_win:].index
 
+    # tabelas
     s_scores = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
     betas = pd.DataFrame(index=usable_index, columns=stocks, dtype=object)
     algo_pos = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
-
-    # w_eff será construído "online": só muda nos dias de rebalance
-    w_eff = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
-    w_eff_prev = pd.Series(0.0, index=stocks, dtype=float)  # último w_eff válido
-
-    diag = []
-
-    # -------------------------------------------------------------------------
-    # 2) Loop diário: estima betas/OU/s-score e atualiza posições
-    #    + Hedge só nos dias de rebalance (congela w_eff entre rebalanceamentos)
-    # -------------------------------------------------------------------------
+    
+    # ------------- loop temporal -------------
     for t in usable_index:
-        ret_win = returns.loc[:t].iloc[-s_win:].copy()
-        ret_win = padronizar_janela(ret_win)
-        fac_win = Factor_PCA.loc[:t].iloc[-s_win:].copy()
-        fac_win = padronizar_janela(fac_win)
-
-        day_idx = algo_pos.index.get_loc(t)
-        is_rebalance = (day_idx % rebalanceamento_dias == 0)
-
-        if fac_win[pcs].isnull().any().any():
-            # se não dá para calcular hoje, carrega posição anterior
-            algo_pos.loc[t] = algo_pos.shift(1).loc[t].fillna(0.0)
-
-            # hedge: não recalcula (mesma regra: só muda em rebalance, mas aqui nem fator tem)
-            w_eff.loc[t] = w_eff_prev.values
-
-            diag.append({"date": t, "n_factor_nan": 1, "n_s_scores": 0, "n_long": 0, "n_short": 0})
+        print(f"Tempo : {t}")
+        # janela [t-s_win, t] para estimação OU
+        ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = padronizar_janela(ret)
+        factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
+        factor = padronizar_janela(factor)
+        
+        # checagem: PCs não podem ter NaN nessa janela padronizada
+        if factor[pcs].isnull().any().any():
             continue
 
+        # s-scores para o dia t (com centralização) + betas para hedge
         s_t, betas_t = compute_s_scores_cross_sectional(
-            returns=ret_win,
-            factors=fac_win[pcs],
+            returns=ret,
+            factors=factor,
             kappa_min=252.0/30.0,
         )
 
+        # guarda s-scores e betas válidos
         s_scores.loc[t, s_t.index] = s_t
         for k, v in betas_t.items():
             betas.loc[t, k] = v
 
+        # atualiza posições discretas com base no s-score de cada ação
         prev = algo_pos.shift(1).loc[t]
         if prev.isna().all():
-            prev = pd.Series(0.0, index=stocks)
+            prev = pd.Series(0.0, index=stocks) #caso inicial
 
-        if is_rebalance:
+        # --- REBALANCEAMENTO A CADA x DIAS ÚTEIS ---
+        day_idx = algo_pos.index.get_loc(t)
+
+        if day_idx % rebalanceamento_dias == 0:
+    
+            # recalcula posições
             new_pos = []
             for stock in stocks:
+                s_val = s_t.get(stock, np.nan)
+
                 new_pos.append(position_from_s(
-                    s=s_t.get(stock, np.nan),
+                    s=s_val,
                     pos_prev=prev.get(stock, 0.0),
-                    sbo=sbo, sso=sso, sbc=sbc, ssc=ssc
+                    sbo=sbo,
+                    sso=sso,
+                    sbc=sbc,
+                    ssc=ssc,  
                 ))
+
             algo_pos.loc[t] = new_pos
+
         else:
+            # mantém a posição anterior (sem trades)
             algo_pos.loc[t] = prev
 
-        # ---------------------------------------------------------------------
-        # 3) Pesos base nas ações (equal weight por lado) - no dia t
-        # ---------------------------------------------------------------------
-        w_stocks_t = equal_weight_by_side(algo_pos.loc[t]).reindex(stocks).fillna(0.0)
-
-        # ---------------------------------------------------------------------
-        # 4) Hedge embutido: só recalcula no rebalance, senão carrega w_eff[t-1]
-        # ---------------------------------------------------------------------
-        if is_rebalance:
-            # DataFrames 1-linha para reaproveitar project_to_factor_neutral sem mudar a API
-            w1 = pd.DataFrame([w_stocks_t.values], index=[t], columns=stocks)
-            b1 = betas.loc[[t], stocks]
-
-            w_eff_t = project_to_factor_neutral(
-                w_stocks=w1,
-                betas=b1,
-                stocks=stocks,
-                pcs=pcs,
-                ridge=1e-6,
-                enforce_dollar_neutral=False,   # ou True se quiser
-            ).iloc[0].reindex(stocks).fillna(0.0)
-
-            w_eff.loc[t] = w_eff_t.values
-            w_eff_prev = w_eff_t.copy()
-        else:
-            w_eff.loc[t] = w_eff_prev.values
-
-        diag.append({
-            "date": t,
-            "n_factor_nan": 0,
-            "n_s_scores": int(pd.Series(s_t).notna().sum()),
-            "n_long": int((algo_pos.loc[t] > 0).sum()),
-            "n_short": int((algo_pos.loc[t] < 0).sum()),
-        })
-
-    diag = pd.DataFrame(diag).set_index("date")
-    if debug:
-        print(diag.resample("YE")[["n_factor_nan", "n_s_scores", "n_long", "n_short"]].mean())
-
-    # Para debug fiel: não drope datas. Só preenche faltas.
-    # (Se você quiser dropar depois, faça só quando debug=False)
-    algo_pos = algo_pos.reindex(usable_index).fillna(0.0)
-    betas = betas.reindex(usable_index)
-    s_scores = s_scores.reindex(usable_index)
-    w_eff = w_eff.reindex(usable_index).fillna(0.0)
-
-    # -------------------------------------------------------------------------
-    # 3) Pesos base nas ações (equal weight por lado)
-    # (mantemos isso aqui só para sanity B e comparação; não é mais usado no PnL)
-    # -------------------------------------------------------------------------
-    w_stocks = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast").fillna(0.0)
-
-    # -------------------------------------------------------------------------
-    # 5) Sanity checks (agora fazem sentido)
-    # -------------------------------------------------------------------------
-    if debug:
-        # ----------------------------
-        # SANITY A: ||exposição residual|| após hedge embutido
-        # ----------------------------
-        expo_norm = []
-        expo_vecs = []  # opcional: guardar vetor de exposição (m,) por dia
-
-        m = len(pcs)
-
-        for dt in w_eff.index:
-            w = w_eff.loc[dt, stocks].values.astype(float)
-
-            b_row = betas.loc[dt, stocks].to_list()
-            B = np.vstack([
-                v if isinstance(v, np.ndarray) and v.shape == (m,) and np.isfinite(v).all()
-                else np.full(m, np.nan, dtype=float)
-                for v in b_row
-            ])
-
-            # usa só ações com beta válido (consistente com o project_to_factor_neutral)
-            valid = np.isfinite(B).all(axis=1) & (np.linalg.norm(B, axis=1) > 0)
-
-            # se não tem betas suficientes no dia, marca NaN
-            if valid.sum() < m:
-                expo_norm.append(np.nan)
-                expo_vecs.append(np.full(m, np.nan))
-                continue
-
-            expo = w[valid] @ B[valid]   # (m,)
-            expo_norm.append(float(np.linalg.norm(expo)))
-            expo_vecs.append(expo)
-
-        expo_norm = pd.Series(expo_norm, index=w_eff.index)
-
-        print("\n--- SANITY A (||exposição residual|| após hedge embutido): média anual ---")
-        print(expo_norm.resample("YE").mean())
-
-        print("\n--- SANITY A (percentis) ---")
-        print(expo_norm.describe(percentiles=[0.5, 0.9, 0.99]))
-
-        # SANITY D: ver quais PCs estão vazando
-        expo_df = pd.DataFrame(expo_vecs, index=w_eff.index, columns=pcs)
-        print("\n--- SANITY D (|exposição| média por PC): top 5 ---")
-        print(expo_df.abs().mean().sort_values(ascending=False).head(5))
-
-        # ----------------------------
-        # SANITY B: impacto do hedge embutido (quanto mexeu no w)
-        # ----------------------------
-        w_stocks_aligned = w_stocks.reindex(w_eff.index).fillna(0.0)
-        hedge_impact = (w_eff - w_stocks_aligned).abs().sum(axis=1)
-
-        print("\n--- SANITY B (impacto do hedge em ações |Δw|): média anual ---")
-        print(hedge_impact.resample("YE").mean())
-
-        # ----------------------------
-        # SANITY C: gross antes de normalizar
-        # ----------------------------
-        gross_raw = w_eff.abs().sum(axis=1)
-
-        print("\n--- SANITY C (gross antes de normalizar): média anual ---")
-        print(gross_raw.resample("YE").mean())
-
-        print("\n--- SANITY C (descrição) ---")
-        print(gross_raw.describe())
-
-        # (extra útil) checar que w_eff só muda no rebalance
-        # (vai imprimir poucas datas se estiver correto)
-        chg = (w_eff - w_eff.shift(1)).abs().sum(axis=1)
-        print("\n--- SANITY E (dias com mudança em w_eff; deve concentrar em rebalance) ---")
-        print(chg[chg > 1e-12].head(30))
-
-    # -------------------------------------------------------------------------
-    # 6) Normaliza gross e calcula PnL SÓ em ações
-    # -------------------------------------------------------------------------
-    w_eff = normalize_gross(w_eff, gross_target=1.0)
-    returns_eff = returns.reindex(w_eff.index).fillna(0.0)
-
+    # remove linhas sem s-score algum
+    null_idx = s_scores.index[s_scores.isnull().all(axis=1)]
+    s_scores = s_scores.drop(index=null_idx)
+    betas = betas.drop(index=null_idx)
+    algo_pos = algo_pos.drop(index=null_idx)
+    
+    # pesos iguais por lado, não ter viés direcional do mercado (soma zero)
+    algo_weights = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast")
+    w_all = normalize_gross(algo_weights)
+    
     ret_net, cumret_algo, turnover = compute_pnl_with_costs(
-        w_all=w_eff,
-        returns_mod=returns_eff,
+        w_all=w_all,
+        returns_mod=returns,
         eps_per_turnover=eps_cost,
     )
 
-    # -------------------------------------------------------------------------
-    # 7) Logs PnL (agora só existe "stock leg", mas você pode decompor custo/turnover)
-    # -------------------------------------------------------------------------
-    if debug:
-        w = w_eff.fillna(0.0)
-        w_shift = w.shift(1).fillna(0.0)
-        rets = returns_eff
-
-        ret_gross = (rets * w_shift).sum(axis=1)
-        turn = (w - w.shift(1)).abs().sum(axis=1).fillna(0.0)
-        cost = eps_cost * turn
-
-        debug_pnl = pd.DataFrame({
-            "ret_gross": ret_gross,
-            "turnover": turn,
-            "cost": cost,
-            "ret_net": ret_gross - cost
-        }, index=rets.index)
-
-        print("\n--- DEBUG PnL (médias anuais) ---")
-        print(debug_pnl.resample("YE").mean()[["ret_gross", "turnover", "cost", "ret_net"]])
-
-        print("\n--- DEBUG PnL (cumulativo) ---")
-        print((1.0 + debug_pnl["ret_net"]).cumprod().iloc[-1])
-
-    # -------------------------------------------------------------------------
-    # 8) SPY
-    # -------------------------------------------------------------------------
-    spy = returns_spy.reindex(cumret_algo.index).fillna(0.0)
+    # comparação com SPY (buy&hold em retorno simples)
+    spy = returns_spy.iloc[s_win:].copy()
     cumret_spy = (1.0 + spy).cumprod()
 
     if plot:
         plt.figure(figsize=(18, 6))
         plt.grid(True)
-        plt.plot(cumret_algo.index, cumret_algo, label="Algo (PCA-OU) hedged via eigenportfolios")
-        plt.plot(cumret_spy.index, cumret_spy, label="SPY")
+        plt.plot(cumret_algo.index, cumret_algo, label='Algo (PCA-OU)')
+        plt.plot(cumret_spy.index,  cumret_spy,  label='SPY')
         plt.legend()
-        plt.title(f"Estratégia PCA/OU vs SPY | PCs={num_pc}, s_win={s_win}")
+        plt.title(f'Estratégia PCA/OU vs SPY | PCs={num_pc}, s_win={s_win}')
         plt.show()
 
-    return cumret_algo, s_scores, w_eff
+    return {
+        'cumret_algo': cumret_algo,
+        's_scores': s_scores,
+        'algo_weights': algo_weights,  
+        'betas': betas,                 
+        'ret_net': ret_net,             
+        'Factor_PCA': Factor_PCA,       
+        'pcs': pcs,                     
+        'turnover': turnover
+    }
 
+def pca_portfolio_spy_var(
+    returns: pd.DataFrame,
+    returns_spy: pd.DataFrame,
+    num_pc: int = 15,
+    s_win: int = 60,
+    # parâmetros para thresholds adaptativos
+    adaptive_thresholds: bool = False,
+    adaptive_window: int = 252,
+    percentile_open: float = 0.15,
+    percentile_close_short: float = 0.35,
+    percentile_close_long: float = 0.45,
+    # thresholds do paper:
+    sbo: float = 1.25,
+    sso: float = 1.25,
+    sbc: float = 0.50,
+    ssc: float = 0.50,
+    eps_cost: float = 0.0005,
+    rebalanceamento_dias: int = 1,
+    plot: bool = True,
+):
+    
+    # Fatores PCA (rolling) com janela de 60 dias
+    Factor_PCA = compute_pca_factor_returns(
+    returns, window_pca=60, n_factors=num_pc)
+    
+    pcs = [f"eig{i+1}" for i in range(num_pc)]
+    stocks = [c for c in returns.columns]
+    usable_index = returns.iloc[s_win:].index
 
+    # tabelas
+    s_scores = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
+    betas = pd.DataFrame(index=usable_index, columns=stocks, dtype=object)
+    algo_pos = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
+    
+    # ------------- loop temporal -------------
+    for t in usable_index:
+        print(f"Tempo : {t}")
+        # janela [t-s_win, t] para estimação OU
+        ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = padronizar_janela(ret)
+        factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
+        factor = padronizar_janela(factor)
+        
+        # checagem: PCs não podem ter NaN nessa janela padronizada
+        if factor[pcs].isnull().any().any():
+            continue
 
+        # s-scores para o dia t (com centralização) + betas para hedge
+        s_t, betas_t = compute_s_scores_cross_sectional(
+            returns=ret,
+            factors=factor,
+            kappa_min=252.0/30.0,
+        )
+
+        # guarda s-scores e betas válidos
+        s_scores.loc[t, s_t.index] = s_t
+        for k, v in betas_t.items():
+            betas.loc[t, k] = v
+
+        # atualiza posições discretas com base no s-score de cada ação
+        prev = algo_pos.shift(1).loc[t]
+        if prev.isna().all():
+            prev = pd.Series(0.0, index=stocks) #caso inicial
+
+        # --- REBALANCEAMENTO A CADA x DIAS ÚTEIS ---
+        day_idx = algo_pos.index.get_loc(t)
+
+        if day_idx % rebalanceamento_dias == 0:
+            #  CALCULAR THRESHOLDS (adaptativo ou fixo)
+            if adaptive_thresholds:
+                # Usar histórico de s-scores até t (inclusive)
+                s_hist = s_scores.loc[:t]
+                
+                # Calcular thresholds adaptativos
+                thresh_dict = compute_stock_specific_thresholds(
+                    s_scores_hist=s_hist,
+                    window=adaptive_window,
+                    percentile_open=percentile_open,
+                    percentile_close_short=percentile_close_short,
+                    percentile_close_long=percentile_close_long,
+                )
+                
+                # Pegar thresholds do dia t (última linha)
+                sbo_t = thresh_dict['sbo'].loc[t]
+                sso_t = thresh_dict['sso'].loc[t]
+                sbc_t = thresh_dict['sbc'].loc[t]
+                ssc_t = thresh_dict['ssc'].loc[t]
+                
+            else:
+                # Usar thresholds fixos (mesmo para todas as ações)
+                sbo_t = pd.Series(sbo, index=stocks)
+                sso_t = pd.Series(sso, index=stocks)
+                sbc_t = pd.Series(sbc, index=stocks)
+                ssc_t = pd.Series(-ssc, index=stocks) 
+                
+            # recalcula posições
+            new_pos = []
+            for stock in stocks:
+                s_val = s_t.get(stock, np.nan)
+                # Thresholds
+                sbo_stock = sbo_t.get(stock, 1.25)
+                sso_stock = sso_t.get(stock, 1.25)
+                sbc_stock = sbc_t.get(stock, 0.50)
+                ssc_stock = ssc_t.get(stock, -0.50)
+
+                new_pos.append(position_from_s(
+                    s=s_val,
+                    pos_prev=prev.get(stock, 0.0),
+                    sbo=sbo_stock,
+                    sso=sso_stock,
+                    sbc=sbc_stock,
+                    ssc=abs(ssc_stock),  
+                ))
+
+            algo_pos.loc[t] = new_pos
+
+        else:
+            # mantém a posição anterior (sem trades)
+            algo_pos.loc[t] = prev
+
+    # remove linhas sem s-score algum
+    null_idx = s_scores.index[s_scores.isnull().all(axis=1)]
+    s_scores = s_scores.drop(index=null_idx)
+    betas = betas.drop(index=null_idx)
+    algo_pos = algo_pos.drop(index=null_idx)
+    
+    # pesos iguais por lado, não ter viés direcional do mercado (soma zero)
+    algo_weights = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast")
+    w_all = normalize_gross(algo_weights)
+    
+    ret_net, cumret_algo, turnover = compute_pnl_with_costs(
+        w_all=w_all,
+        returns_mod=returns,
+        eps_per_turnover=eps_cost,
+    )
+
+    # comparação com SPY (buy&hold em retorno simples)
+    spy = returns_spy.iloc[s_win:].copy()
+    cumret_spy = (1.0 + spy).cumprod()
+
+    if plot:
+        plt.figure(figsize=(18, 6))
+        plt.grid(True)
+        plt.plot(cumret_algo.index, cumret_algo, label='Algo (PCA-OU)')
+        plt.plot(cumret_spy.index,  cumret_spy,  label='SPY')
+        plt.legend()
+        plt.title(f'Estratégia PCA/OU vs SPY | PCs={num_pc}, s_win={s_win}')
+        plt.show()
+
+    return {
+        'cumret_algo': cumret_algo,
+        's_scores': s_scores,
+        'algo_weights': algo_weights,  
+        'betas': betas,                 
+        'ret_net': ret_net,             
+        'Factor_PCA': Factor_PCA,       
+        'pcs': pcs,                     
+        'turnover': turnover
+    }
+
+def pca_portfolio_spy_adaptive_pcs(
+    returns: pd.DataFrame,
+    returns_spy: pd.DataFrame,
+    variance_target: float = 0.60,  
+    min_pcs: int = 5,
+    max_pcs: int = 35,
+    s_win: int = 60,
+    # thresholds adaptativos
+    adaptive_thresholds: bool = False,
+    adaptive_window: int = 252,
+    percentile_open: float = 0.15,
+    percentile_close_short: float = 0.35,
+    percentile_close_long: float = 0.45,
+    # thresholds fixos
+    sbo: float = 1.25,
+    sso: float = 1.25,
+    sbc: float = 0.50,
+    ssc: float = 0.50,
+    eps_cost: float = 0.0005,
+    rebalanceamento_dias: int = 1,
+    plot: bool = True,
+):
+    """
+    Backtest com número de PCs ADAPTATIVO (varia ao longo do tempo).
+    """
+    
+    # ⭐ Fatores PCA ADAPTATIVOS
+    Factor_PCA, num_pcs_used = compute_pca_factor_returns_adaptive(
+        returns,
+        window_pca=60,
+        variance_target=variance_target,
+        min_factors=min_pcs,
+        max_factors=max_pcs,
+    )
+    
+    stocks = [c for c in returns.columns]
+    usable_index = returns.iloc[s_win:].index
+    
+    # tabelas
+    s_scores = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
+    betas = pd.DataFrame(index=usable_index, columns=stocks, dtype=object)
+    algo_pos = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
+    
+    # ------------- loop temporal -------------
+    for t in usable_index:
+        print(f"Tempo : {t}")
+        
+        # ⭐ Número de PCs usado neste dia
+        num_pc_t = num_pcs_used.get(t, max_pcs)
+        if pd.isna(num_pc_t):
+            num_pc_t = max_pcs
+        num_pc_t = int(num_pc_t)
+        
+        pcs_t = [f"eig{i+1}" for i in range(num_pc_t)]
+        
+        # janela [t-s_win, t] para estimação OU
+        ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = padronizar_janela(ret)
+        
+        factor = Factor_PCA.loc[:t, pcs_t].iloc[-s_win:].copy()
+        factor = padronizar_janela(factor)
+        
+        # checagem: PCs não podem ter NaN
+        if factor.isnull().any().any():
+            continue
+        
+        # s-scores
+        s_t, betas_t = compute_s_scores_cross_sectional(
+            returns=ret,
+            factors=factor,
+            kappa_min=252.0/30.0,
+        )
+        
+        # guarda s-scores e betas válidos
+        s_scores.loc[t, s_t.index] = s_t
+        for k, v in betas_t.items():
+            betas.loc[t, k] = v
+        
+        # atualiza posições
+        prev = algo_pos.shift(1).loc[t]
+        if prev.isna().all():
+            prev = pd.Series(0.0, index=stocks)
+        
+        # REBALANCEAMENTO
+        day_idx = algo_pos.index.get_loc(t)
+        
+        if day_idx % rebalanceamento_dias == 0:
+            # Thresholds (adaptativo ou fixo)
+            if adaptive_thresholds:
+                s_hist = s_scores.loc[:t]
+                thresh_dict = compute_stock_specific_thresholds(
+                    s_scores_hist=s_hist,
+                    window=adaptive_window,
+                    percentile_open=percentile_open,
+                    percentile_close_short=percentile_close_short,
+                    percentile_close_long=percentile_close_long,
+                )
+                sbo_t = thresh_dict['sbo'].loc[t]
+                sso_t = thresh_dict['sso'].loc[t]
+                sbc_t = thresh_dict['sbc'].loc[t]
+                ssc_t = thresh_dict['ssc'].loc[t]
+            else:
+                sbo_t = pd.Series(sbo, index=stocks)
+                sso_t = pd.Series(sso, index=stocks)
+                sbc_t = pd.Series(sbc, index=stocks)
+                ssc_t = pd.Series(-ssc, index=stocks)
+            
+            # Recalcula posições
+            new_pos = []
+            for stock in stocks:
+                s_val = s_t.get(stock, np.nan)
+                sbo_stock = sbo_t.get(stock, 1.25)
+                sso_stock = sso_t.get(stock, 1.25)
+                sbc_stock = sbc_t.get(stock, 0.50)
+                ssc_stock = ssc_t.get(stock, -0.50)
+                
+                new_pos.append(position_from_s(
+                    s=s_val,
+                    pos_prev=prev.get(stock, 0.0),
+                    sbo=sbo_stock,
+                    sso=sso_stock,
+                    sbc=sbc_stock,
+                    ssc=abs(ssc_stock),
+                ))
+            
+            algo_pos.loc[t] = new_pos
+        else:
+            algo_pos.loc[t] = prev
+    
+    # remove linhas sem s-score
+    null_idx = s_scores.index[s_scores.isnull().all(axis=1)]
+    s_scores = s_scores.drop(index=null_idx)
+    betas = betas.drop(index=null_idx)
+    algo_pos = algo_pos.drop(index=null_idx)
+    
+    # pesos e PnL
+    algo_weights = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast")
+    w_all = normalize_gross(algo_weights)
+    
+    ret_net, cumret_algo, turnover = compute_pnl_with_costs(
+        w_all=w_all,
+        returns_mod=returns,
+        eps_per_turnover=eps_cost,
+    )
+    
+    # comparação com SPY
+    spy = returns_spy.iloc[s_win:].copy()
+    cumret_spy = (1.0 + spy).cumprod()
+    
+    if plot:
+        fig, axes = plt.subplots(2, 1, figsize=(18, 10))
+        
+        # Plot 1: Performance
+        axes[0].plot(cumret_algo.index, cumret_algo, label='Algo (PCA Adaptativo)', linewidth=2)
+        axes[0].plot(cumret_spy.index, cumret_spy, label='SPY', linewidth=1.5, alpha=0.7)
+        axes[0].legend()
+        axes[0].grid(True)
+        axes[0].set_title(f'Estratégia PCA/OU ADAPTATIVO vs SPY | Target Var={variance_target*100:.0f}%')
+        
+        # Plot 2: Evolução do número de PCs
+        num_pcs_used.reindex(cumret_algo.index).plot(ax=axes[1], linewidth=2, color='darkgreen')
+        axes[1].set_title('Número de PCs Usado ao Longo do Tempo', fontsize=12, fontweight='bold')
+        axes[1].set_ylabel('# PCs')
+        axes[1].axhline(num_pcs_used.mean(), color='red', linestyle='--', 
+                        label=f'Média: {num_pcs_used.mean():.1f}')
+        axes[1].legend()
+        axes[1].grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    return {
+        'cumret_algo': cumret_algo,
+        's_scores': s_scores,
+        'algo_weights': algo_weights,
+        'betas': betas,
+        'ret_net': ret_net,
+        'Factor_PCA': Factor_PCA,
+        'num_pcs_used': num_pcs_used,  
+        'turnover': turnover,
+    }
+
+# =============================================================================
 # estatisticas de desempenho
 def stats_from_returns(ret):
     ann = 252
