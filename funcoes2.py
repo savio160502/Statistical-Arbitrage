@@ -188,7 +188,7 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
     
     stocks = list(returns.columns)
     s_t = pd.Series(index=stocks, dtype=float)
-    betas_t, m_map, sigma_eq_map, X_T_map = {}, {}, {},{}
+    betas_t, m_map, sigma_eq_map, X_T_map, u_map = {}, {}, {},{}, {}
 
     #X_mat = factors.values                   # tabela dos retornos dos PCs
     X_df = factors.copy()
@@ -217,19 +217,23 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
         sigma_eq_map[stock] = sigma_eq
         betas_t[stock] = beta
         X_T_map[stock] = X_T
+        u = X_T - m
+        if np.isfinite(u) and np.isfinite(sigma_eq) and sigma_eq > 0:
+            u_map[stock] = u
 
     if not m_map:
         return s_t, betas_t  # vazio
 
-    # centralização cross-sectional
-    m_bar = np.mean(list(m_map.values()))
-    for stock, m in m_map.items():
-        m_centered = m - m_bar
-        s_val = (X_T_map[stock] - m) / sigma_eq_map[stock]  # s_score do paper
-        s_val2 = (X_T_map[stock] - m_centered) / sigma_eq_map[stock] # s_score do paper centralizado (melhor)
+    # centralização cross-sectional em U = (X_t - m) 
+    u_bar = np.mean(list(u_map.values()))
 
-        if np.isfinite(s_val2):
-            s_t.loc[stock] = s_val2
+    for stock, u in u_map.items():
+        u_centered = u - u_bar
+        #s_val = u / sigma_eq_map[stock]  # s_score do paper
+        s_val = u_centered / sigma_eq_map[stock] # s_score do paper centralizado (melhor)
+
+        if np.isfinite(s_val):
+            s_t.loc[stock] = s_val
 
     return s_t, betas_t
 
@@ -302,30 +306,103 @@ def hedge_from_betas(
     Saída é DataFrame [date x pcs] com pesos de hedge.
     """
     
-    # alinhar datas e colunas
+    m = len(pcs)
+
+    # alinhar datas/colunas
     common_idx = algo_weights.index.intersection(betas.index)
-    beta_bar = betas.reindex(index=common_idx, columns=stocks)
     W = algo_weights.reindex(index=common_idx, columns=stocks).fillna(0.0)
-    
-    # limpar células: garantir vetor v´alido por a¸c~ao
+    B = betas.reindex(index=common_idx, columns=stocks)
+
+    # limpar células (aceita list/tuple/np.array; garante shape (m,))
     def clean_cell(v):
-        if isinstance(v, np.ndarray) and v.shape == (len(pcs),) and np.isfinite(v).all():
-            return v
-        return np.zeros(len(pcs))
-    beta_bar = beta_bar.apply(lambda col: col.map(clean_cell))
+        if isinstance(v, (list, tuple, np.ndarray)):
+            a = np.asarray(v, dtype=float).ravel()
+            if a.shape[0] == m and np.isfinite(a).all():
+                return a
+        return np.zeros(m, dtype=float)
+
+    # aplica limpeza (coluna a coluna)
+    B = B.apply(lambda col: col.map(clean_cell))
 
     hedge_rows = []
-    for dt, w in W.iterrows():
-        b_row = beta_bar.loc[dt, stocks].to_list()
-        if not b_row:
-            hedge_rows.append(np.zeros(len(pcs)))
-            continue
-        b_dt = np.vstack(b_row)                         # shape: (n_stocks, m)
-        expo = w.values @ b_dt                          # Σ_i w_i β_i  (shape: (m,)) exposição média por PC
-        hedge_rows.append(-expo)                        # neutraliza com sinal oposto
-        
-    hedge = pd.DataFrame(hedge_rows, index=common_idx, columns=pcs)
+    for dt in common_idx:
+        w = W.loc[dt].values  # (n_stocks,)
+        b_list = B.loc[dt, stocks].to_list()  # lista de arrays (m,)
+
+        # stack -> (n_stocks, m)
+        b_dt = np.vstack(b_list)
+        expo = w @ b_dt  # (m,)
+        hedge_rows.append(-expo)
+
+    hedge = pd.DataFrame(hedge_rows, index=common_idx, columns=pcs, dtype=float)
     return hedge
+
+def hedge_from_betas_adaptive(
+    algo_weights: pd.DataFrame,
+    betas: pd.DataFrame,
+    stocks,
+    max_pcs: int,
+    pcs_prefix: str = "eig",
+):
+    """
+    Hedge em PCs com dimensão adaptativa por dia:
+      - Em cada dia t, usa o tamanho m_t do beta (quando disponível).
+      - Computa hedge_t = - Σ_i w_i(t) * beta_i(t)  (em R^{m_t})
+      - Armazena em vetor de tamanho max_pcs, preenchendo [0:m_t] e zerando o resto.
+
+    Retorna:
+      hedge: DataFrame [date x eig1..eig(max_pcs)]
+      num_pcs_used_in_hedge: Series [date] com m_t usado (diagnóstico)
+    """
+    pcs_cols = [f"{pcs_prefix}{i+1}" for i in range(max_pcs)]
+
+    common_idx = algo_weights.index.intersection(betas.index)
+    W = algo_weights.reindex(index=common_idx, columns=stocks).fillna(0.0)
+    B = betas.reindex(index=common_idx, columns=stocks)
+
+    hedge = pd.DataFrame(index=common_idx, columns=pcs_cols, dtype=float)
+    m_used = pd.Series(index=common_idx, dtype=float)
+
+    for dt in common_idx:
+        w = W.loc[dt]  # Series
+
+        # Descobrir m_t a partir do primeiro beta válido do dia
+        m_t = None
+        for stock in stocks:
+            v = B.loc[dt, stock]
+            if isinstance(v, (list, tuple, np.ndarray)):
+                a = np.asarray(v, dtype=float).ravel()
+                if a.size > 0 and np.isfinite(a).all():
+                    m_t = int(a.size)
+                    break
+
+        if m_t is None:
+            hedge.loc[dt] = np.zeros(max_pcs, dtype=float)
+            m_used.loc[dt] = np.nan
+            continue
+
+        m_t = min(m_t, max_pcs)
+        expo = np.zeros(m_t, dtype=float)
+
+        # soma exposições
+        for stock in stocks:
+            wi = float(w.get(stock, 0.0))
+            v = B.loc[dt, stock]
+
+            if wi == 0.0:
+                continue
+
+            if isinstance(v, (list, tuple, np.ndarray)):
+                a = np.asarray(v, dtype=float).ravel()
+                if a.size >= m_t and np.isfinite(a[:m_t]).all():
+                    expo += wi * a[:m_t]
+
+        hedge_row = np.zeros(max_pcs, dtype=float)
+        hedge_row[:m_t] = -expo
+        hedge.loc[dt] = hedge_row
+        m_used.loc[dt] = m_t
+
+    return hedge, m_used
 
 def normalize_gross(w_all: pd.DataFrame, gross_target: float = 1.0):
     """
@@ -559,7 +636,7 @@ def pca_portfolio_spy_hedge(
     w_all = normalize_gross(w_all)
     
     # retornos utilizados no trade (ações + PCs)
-    returns_all = pd.concat([returns, Factor_PCA], axis=1).dropna()
+    returns_all = pd.concat([returns, Factor_PCA], axis=1).fillna(0.0)
     ret_net, cumret_algo, turnover = compute_pnl_with_costs(
         w_all=w_all,
         returns_mod=returns_all,
@@ -832,11 +909,20 @@ def pca_portfolio_spy_var(
     
     # pesos iguais por lado, não ter viés direcional do mercado (soma zero)
     algo_weights = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast")
-    w_all = normalize_gross(algo_weights)
+
+    # hedge por PCs, zerar a exposição agregada a cada fator PCA
+    hedge = hedge_from_betas(algo_weights, betas, stocks, pcs)
+    
+    # junta pesos (ações + PCs) e normalização da exposição bruta
+    w_all = pd.concat([algo_weights, hedge], axis=1)
+    w_all = normalize_gross(w_all)
+    
+    # retornos utilizados no trade (ações + PCs)
+    returns_all = pd.concat([returns, Factor_PCA], axis=1).fillna(0.0)
     
     ret_net, cumret_algo, turnover = compute_pnl_with_costs(
         w_all=w_all,
-        returns_mod=returns,
+        returns_mod=returns_all,
         eps_per_turnover=eps_cost,
     )
 
@@ -890,7 +976,7 @@ def pca_portfolio_spy_adaptive_pcs(
     Backtest com número de PCs ADAPTATIVO (varia ao longo do tempo).
     """
     
-    # ⭐ Fatores PCA ADAPTATIVOS
+    # Fatores PCA ADAPTATIVOS
     Factor_PCA, num_pcs_used = compute_pca_factor_returns_adaptive(
         returns,
         window_pca=60,
@@ -900,6 +986,7 @@ def pca_portfolio_spy_adaptive_pcs(
     )
     
     stocks = [c for c in returns.columns]
+    pcs_all = [f"eig{i+1}" for i in range(max_pcs)]
     usable_index = returns.iloc[s_win:].index
     
     # tabelas
@@ -907,19 +994,22 @@ def pca_portfolio_spy_adaptive_pcs(
     betas = pd.DataFrame(index=usable_index, columns=stocks, dtype=object)
     algo_pos = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
     
+    # hedge em dimensão fixa max_pcs (preenche só [0:m_t] por dia)
+    hedge_pcs = pd.DataFrame(index=usable_index, columns=pcs_all, dtype=float)
+
     # ------------- loop temporal -------------
     for t in usable_index:
         print(f"Tempo : {t}")
         
-        # ⭐ Número de PCs usado neste dia
-        num_pc_t = num_pcs_used.get(t, max_pcs)
+        # Número de PCs usado neste dia
+        num_pc_t = num_pcs_used.get(t, np.nan)
         if pd.isna(num_pc_t):
             num_pc_t = max_pcs
-        num_pc_t = int(num_pc_t)
+        num_pc_t = int(np.clip(int(num_pc_t), min_pcs, max_pcs))
         
         pcs_t = [f"eig{i+1}" for i in range(num_pc_t)]
         
-        # janela [t-s_win, t] para estimação OU
+        # janela para OU/regressões até t [t-s_win, t] 
         ret = returns.loc[:t].iloc[-s_win:].copy()
         ret = padronizar_janela(ret)
         
@@ -992,25 +1082,55 @@ def pca_portfolio_spy_adaptive_pcs(
             algo_pos.loc[t] = new_pos
         else:
             algo_pos.loc[t] = prev
+        
+        # HEDGE DO DIA (com PCs adaptativos)
+        # =========================
+        # pesos das ações no dia t (igual-weight por lado)
+        w_stocks_t = equal_weight_by_side(algo_pos.loc[t])
+
+        # exposição agregada aos PCs do dia: expo = Σ_i w_i * beta_i
+        expo = np.zeros(num_pc_t, dtype=float)
+
+        for stock, beta_vec in betas_t.items():
+            wi = float(w_stocks_t.get(stock, 0.0))
+            if wi == 0.0:
+                continue
+
+            b = np.asarray(beta_vec, dtype=float).ravel()
+            if b.shape[0] != num_pc_t:
+                continue
+            if not np.isfinite(b).all():
+                continue
+
+            expo += wi * b
+
+        hedge_row = np.zeros(max_pcs, dtype=float)
+        hedge_row[:num_pc_t] = -expo
+        hedge_pcs.loc[t, pcs_all] = hedge_row
+
     
     # remove linhas sem s-score
     null_idx = s_scores.index[s_scores.isnull().all(axis=1)]
     s_scores = s_scores.drop(index=null_idx)
     betas = betas.drop(index=null_idx)
     algo_pos = algo_pos.drop(index=null_idx)
-    
+    hedge_pcs = hedge_pcs.drop(index=null_idx)
+
     # pesos e PnL
     algo_weights = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast")
-    w_all = normalize_gross(algo_weights)
+    w_all = pd.concat([algo_weights, hedge_pcs], axis=1)
+    w_all = normalize_gross(w_all)
     
+    returns_all = pd.concat([returns, Factor_PCA], axis=1).fillna(0.0)
+
     ret_net, cumret_algo, turnover = compute_pnl_with_costs(
         w_all=w_all,
-        returns_mod=returns,
+        returns_mod=returns_all,
         eps_per_turnover=eps_cost,
     )
     
     # comparação com SPY
-    spy = returns_spy.iloc[s_win:].copy()
+    spy = returns_spy.reindex(cumret_algo.index).fillna(0.0)
     cumret_spy = (1.0 + spy).cumprod()
     
     if plot:
@@ -1036,14 +1156,17 @@ def pca_portfolio_spy_adaptive_pcs(
         plt.show()
     
     return {
-        'cumret_algo': cumret_algo,
-        's_scores': s_scores,
-        'algo_weights': algo_weights,
-        'betas': betas,
-        'ret_net': ret_net,
-        'Factor_PCA': Factor_PCA,
-        'num_pcs_used': num_pcs_used,  
-        'turnover': turnover,
+        "cumret_algo": cumret_algo,
+        "cumret_spy": cumret_spy,
+        "s_scores": s_scores,
+        "algo_weights": algo_weights,
+        "hedge_pcs": hedge_pcs,
+        "w_all": w_all,
+        "betas": betas,
+        "ret_net": ret_net,
+        "Factor_PCA": Factor_PCA,
+        "num_pcs_used": num_pcs_used,
+        "turnover": turnover,
     }
 
 # =============================================================================
