@@ -656,7 +656,17 @@ def pca_portfolio_spy_hedge(
         plt.title(f'Estratégia PCA/OU vs SPY | PCs={num_pc}, s_win={s_win}')
         plt.show()
 
-    return cumret_algo, s_scores
+    return {
+        'cumret_algo': cumret_algo,
+        's_scores': s_scores,
+        'algo_weights': algo_weights,
+        "w_all": w_all,  
+        'betas': betas,                 
+        'ret_net': ret_net,             
+        'Factor_PCA': Factor_PCA,       
+        'pcs': pcs,                     
+        'turnover': turnover
+    }
 
 def pca_portfolio_spy(
     returns: pd.DataFrame,
@@ -773,7 +783,8 @@ def pca_portfolio_spy(
     return {
         'cumret_algo': cumret_algo,
         's_scores': s_scores,
-        'algo_weights': algo_weights,  
+        'algo_weights': algo_weights,
+        "w_all": w_all,  
         'betas': betas,                 
         'ret_net': ret_net,             
         'Factor_PCA': Factor_PCA,       
@@ -942,7 +953,8 @@ def pca_portfolio_spy_var(
     return {
         'cumret_algo': cumret_algo,
         's_scores': s_scores,
-        'algo_weights': algo_weights,  
+        'algo_weights': algo_weights,
+        "w_all": w_all,
         'betas': betas,                 
         'ret_net': ret_net,             
         'Factor_PCA': Factor_PCA,       
