@@ -63,44 +63,75 @@ def compute_beta_exposure(algo_weights, betas, pcs):
 def plot_beta_exposure(expo_df, title_prefix=""):
     """
     Plota a evolução temporal da exposição aos fatores PCA.
+    Versão robusta: se adapta ao número de fatores disponíveis (eig1..eigK).
     """
+    pcs = list(expo_df.columns)
+    n_pcs = len(pcs)
+
+    # -------- helpers --------
+    def _has(col): 
+        return col in expo_df.columns
+
+    # -------- figure --------
     fig, axes = plt.subplots(4, 1, figsize=(16, 12))
-    
-    # Plot 1: Fator dominante (eigen1)
-    expo_df['eig1'].plot(ax=axes[0], color='navy', linewidth=1.5)
-    axes[0].axhline(0, color='red', linestyle='--', alpha=0.5)
-    axes[0].set_title(f'{title_prefix}Exposição ao Eigen1 (Fator Dominante)', fontsize=12, fontweight='bold')
-    axes[0].set_ylabel('Beta Agregado')
+
+    # Plot 1: eig1 (se existir)
+    if _has("eig1"):
+        expo_df["eig1"].plot(ax=axes[0], linewidth=1.5)
+        axes[0].set_title(f"{title_prefix}Exposição ao Eigen1 (Fator Dominante)", fontsize=12, fontweight="bold")
+    else:
+        # fallback: plota o primeiro fator disponível
+        expo_df[pcs[0]].plot(ax=axes[0], linewidth=1.5)
+        axes[0].set_title(f"{title_prefix}Exposição ao {pcs[0]} (Fator Dominante)", fontsize=12, fontweight="bold")
+
+    axes[0].axhline(0, color="red", linestyle="--", alpha=0.5)
+    axes[0].set_ylabel("Beta Agregado")
     axes[0].grid(True, alpha=0.3)
-    
-    # Plot 2: Fatores secundários (2-4)
-    expo_df[['eig2', 'eig3', 'eig4']].plot(ax=axes[1], linewidth=1.2)
-    axes[1].axhline(0, color='red', linestyle='--', alpha=0.5)
-    axes[1].set_title(f'{title_prefix}Exposição aos Eigen2-4', fontsize=12, fontweight='bold')
-    axes[1].set_ylabel('Beta Agregado')
-    axes[1].legend(loc='best')
+
+    # Plot 2: fatores secundários (eig2..eig4) — mas só os que existirem
+    secondary = [c for c in ["eig2", "eig3", "eig4"] if _has(c)]
+    if len(secondary) >= 1:
+        expo_df[secondary].plot(ax=axes[1], linewidth=1.2)
+        axes[1].set_title(f"{title_prefix}Exposição aos fatores secundários ({', '.join(secondary)})",
+                          fontsize=12, fontweight="bold")
+        axes[1].legend(loc="best")
+    else:
+        axes[1].text(0.5, 0.5, "Sem fatores secundários (num_pc < 2)",
+                     ha="center", va="center", transform=axes[1].transAxes, fontsize=11)
+        axes[1].set_title(f"{title_prefix}Exposição aos fatores secundários", fontsize=12, fontweight="bold")
+
+    axes[1].axhline(0, color="red", linestyle="--", alpha=0.5)
+    axes[1].set_ylabel("Beta Agregado")
     axes[1].grid(True, alpha=0.3)
-    
+
     # Plot 3: Exposição total (soma dos valores absolutos)
     total_expo = expo_df.abs().sum(axis=1)
-    total_expo.plot(ax=axes[2], color='darkred', linewidth=1.5)
-    axes[2].set_title(f'{title_prefix}Exposição Total (Σ|β|)', fontsize=12, fontweight='bold')
-    axes[2].set_ylabel('Soma |Betas|')
+    total_expo.plot(ax=axes[2], linewidth=1.5)
+    axes[2].set_title(f"{title_prefix}Exposição Total (Σ|β|)", fontsize=12, fontweight="bold")
+    axes[2].set_ylabel("Soma |Betas|")
     axes[2].grid(True, alpha=0.3)
-    
-    # Plot 4: Heatmap dos primeiros 10 fatores
-    expo_sample = expo_df[expo_df.columns[:10]].T
-    im = axes[3].imshow(expo_sample.values, aspect='auto', cmap='RdBu_r', 
-                         vmin=-0.3, vmax=0.3, interpolation='nearest')
-    axes[3].set_yticks(range(10))
+
+    # Plot 4: Heatmap dos primeiros K fatores (até 10, mas se tiver menos, usa menos)
+    k = min(10, n_pcs)
+    expo_sample = expo_df[pcs[:k]].T
+
+    im = axes[3].imshow(
+        expo_sample.values,
+        aspect="auto",
+        cmap="RdBu_r",
+        vmin=-0.3,
+        vmax=0.3,
+        interpolation="nearest"
+    )
+
+    axes[3].set_yticks(range(k))
     axes[3].set_yticklabels(expo_sample.index)
-    axes[3].set_title(f'{title_prefix}Heatmap de Exposição (Top 10 Fatores)', fontsize=12, fontweight='bold')
-    axes[3].set_xlabel('Tempo')
-    plt.colorbar(im, ax=axes[3], label='Beta')
-    
+    axes[3].set_title(f"{title_prefix}Heatmap de Exposição (Top {k} Fatores)", fontsize=12, fontweight="bold")
+    axes[3].set_xlabel("Tempo")
+    plt.colorbar(im, ax=axes[3], label="Beta")
+
     plt.tight_layout()
     plt.show()
-    
     return fig
 
 
@@ -289,16 +320,16 @@ def analyze_strategy(algo_weights, betas, ret_net, Factor_PCA, pcs,
     print("ANÁLISE DE NEUTRALIDADE DA ESTRATÉGIA")
     print("🔍 "*35 + "\n")
     
-    # Teste 1: Exposição Beta
-    print("\n[1/2] Calculando exposição beta agregada...")
-    expo_df = compute_beta_exposure(algo_weights, betas, pcs)
-    expo_stats = beta_exposure_statistics(expo_df)
+    # # Teste 1: Exposição Beta
+    # print("\n[1/2] Calculando exposição beta agregada...")
+    # expo_df = compute_beta_exposure(algo_weights, betas, pcs)
+    # expo_stats = beta_exposure_statistics(expo_df)
     
-    if plot:
-        fig1 = plot_beta_exposure(expo_df, title_prefix)
+    # if plot:
+    #     fig1 = plot_beta_exposure(expo_df, title_prefix)
     
     # Teste 2: Regressão PnL
-    print("\n[2/2] Regredindo PnL contra fatores...")
+    print("\n Regredindo PnL contra fatores...")
     regress_results = regress_pnl_on_factors(ret_net, Factor_PCA, pcs)
     pnl_regression_statistics(regress_results)
     
@@ -307,8 +338,8 @@ def analyze_strategy(algo_weights, betas, ret_net, Factor_PCA, pcs,
     
     # Consolidar resultados
     results = {
-        'beta_exposure': expo_df,
-        'beta_stats': expo_stats,
+        #'beta_exposure': expo_df,
+        #'beta_stats': expo_stats,
         'regression': regress_results,
     }
     
