@@ -554,6 +554,7 @@ def pca_portfolio_spy_hedge(
     ssc: float = 0.50,
     eps_cost: float = 0.0005,
     rebalanceamento_dias: int = 1,
+    kappa_min: float = 252.0/30.0,
     plot: bool = True,
 ):
     
@@ -587,7 +588,7 @@ def pca_portfolio_spy_hedge(
         s_t, betas_t = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
-            kappa_min=252.0/30.0,
+            kappa_min=kappa_min,
         )
 
         # guarda s-scores e betas válidos
@@ -680,6 +681,7 @@ def pca_portfolio_spy(
     ssc: float = 0.50,
     eps_cost: float = 0.0005,
     rebalanceamento_dias: int = 1,
+    kappa_min: float = 252.0/30.0,
     plot: bool = True,
 ):
     
@@ -713,7 +715,7 @@ def pca_portfolio_spy(
         s_t, betas_t = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
-            kappa_min=252.0/30.0,
+            kappa_min=kappa_min,
         )
 
         # guarda s-scores e betas válidos
@@ -810,6 +812,7 @@ def pca_portfolio_spy_var(
     ssc: float = 0.50,
     eps_cost: float = 0.0005,
     rebalanceamento_dias: int = 1,
+    kappa_min: float = 252.0/30.0,
     plot: bool = True,
 ):
     
@@ -843,7 +846,7 @@ def pca_portfolio_spy_var(
         s_t, betas_t = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
-            kappa_min=252.0/30.0,
+            kappa_min=kappa_min,
         )
 
         # guarda s-scores e betas válidos
@@ -982,6 +985,7 @@ def pca_portfolio_spy_adaptive_pcs(
     ssc: float = 0.50,
     eps_cost: float = 0.0005,
     rebalanceamento_dias: int = 1,
+    kappa_min: float = 252.0/30.0,
     plot: bool = True,
 ):
     """
@@ -1036,7 +1040,7 @@ def pca_portfolio_spy_adaptive_pcs(
         s_t, betas_t = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
-            kappa_min=252.0/30.0,
+            kappa_min=kappa_min,
         )
         
         # guarda s-scores e betas válidos
