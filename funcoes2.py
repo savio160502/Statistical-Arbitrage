@@ -100,6 +100,52 @@ def compute_pca_factor_returns(returns: pd.DataFrame, window_pca: int = 60, n_fa
 
     return F.dropna(how="all")
 
+def compute_pca_factor_returns_with_weights(returns, window_pca=60, n_factors=15):
+    dates = returns.index
+    stocks_all = list(returns.columns)
+
+    F = pd.DataFrame(index=dates, columns=[f"eig{i+1}" for i in range(n_factors)], dtype=float)
+    evals_df = pd.DataFrame(index=dates, columns=[f"eig{i+1}" for i in range(n_factors)], dtype=float)
+
+    # pesos por PC: dict {pc: DataFrame(date x stock)}
+    W = {f"eig{i+1}": pd.DataFrame(0.0, index=dates, columns=stocks_all) for i in range(n_factors)}
+
+    for i in range(window_pca, len(dates)):
+        t_hist = dates[i - window_pca : i]
+        t = dates[i]
+
+        Rw = returns.loc[t_hist]
+        Zw = padronizar_janela(Rw).dropna(axis=1, how='any')
+        if Zw.shape[1] < n_factors + 1:
+            continue
+
+        C = Zw.corr()
+        evals, evecs = np.linalg.eigh(C.values)
+        idx = np.argsort(evals)[::-1]
+        evals = evals[idx]
+        evecs = evecs[:, idx]
+
+        sigma_w = Rw[Zw.columns].std(ddof=1).replace(0, np.nan)
+        Rt = returns.loc[t, Zw.columns]
+        if Rt.isnull().any():
+            continue
+
+        for j in range(n_factors):
+            vj = pd.Series(evecs[:, j], index=Zw.columns)
+            raw = (vj / sigma_w).replace([np.inf, -np.inf], np.nan).dropna()
+            if raw.empty:
+                continue
+
+            wj = raw.reindex(Zw.columns).fillna(0.0)
+            wj = normalizar_pesos(wj)  # L1=1
+
+            # guardar pesos no universo completo
+            W[f"eig{j+1}"].loc[t, wj.index] = wj.values
+            evals_df.loc[t, f"eig{j+1}"] = float(evals[j])
+
+            F.loc[t, f"eig{j+1}"] = float(Rt.dot(wj))
+
+    return F.dropna(how="all"), evals_df.dropna(how="all"), W
 
 # =============================================================================
 # OU e s-score (com centralização cross-sectional do m)
@@ -172,12 +218,104 @@ def estimate_ou_from_cumsum(epsilon):
 
     return m, X_T, var_zeta, kappa_ann, sigma_eq
 
-def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame, kappa_min: float = 252.0/30.0): # filtro do paper
+# drift
+def estimate_ou_from_cumsum_with_drift(
+    epsilon,
+    trading_days: int = 252,
+    ma_window: int = 60,
+    eps_kappa_floor: float = 1e-8,
+    min_obs: int = 30,
+):
+    """
+    Estima OU no mispricing X_t = cumsum(epsilon_t) e calcula drift alpha (paper).
+
+    Mispricing (nível):
+        X_{t+1} = a + b X_t + zeta_{t+1}
+
+    Mapeamento AR(1) -> OU (dt = 1 dia):
+        b = exp(-kappa_daily)
+        kappa_daily = -log(b)
+        m = a/(1-b)
+        sigma_eq = sqrt( Var(zeta) / (1 - b^2) )
+
+    Drift (paper):
+        alpha_daily = slope( MA_{ma_window}(X_t) )  # inclinação da média móvel do nível X
+        (unidade: X por dia)
+
+    Modified s-score (paper):
+        s_mod = s - alpha/(kappa * sigma_eq)
+
+    Retorna:
+        (m, X_T, kappa_ann, sigma_eq, alpha_daily, adj)
+    onde:
+        adj = alpha_daily / (kappa_daily * sigma_eq)
+    """
+    eps = np.asarray(epsilon, dtype=float).ravel()
+    if len(eps) < max(min_obs, ma_window + 2) or not np.isfinite(eps).all():
+        return None
+
+    # 1) constrói X = cumsum(eps)
+    Xk = np.cumsum(eps)
+    if len(Xk) < 2 or not np.isfinite(Xk).all():
+        return None
+
+    # 2) drift alpha = slope da média móvel de X (interpretação do paper)
+    if len(Xk) < ma_window + 2:
+        return None
+
+    kernel = np.ones(ma_window, dtype=float) / float(ma_window)
+    maX = np.convolve(Xk, kernel, mode="valid")  # comprimento = len(Xk)-ma_window+1
+
+    t = np.arange(len(maX), dtype=float)  # passo de 1 dia
+    # slope (X por dia)
+    alpha_daily = float(np.polyfit(t, maX, 1)[0])
+    if not np.isfinite(alpha_daily):
+        return None
+
+    # 3) regressão AR(1): X_{t+1} = a + b X_t + zeta
+    X_lag = Xk[:-1].reshape(-1, 1)
+    y = Xk[1:]
+
+    model = LinearRegression().fit(X_lag, y)
+    a = float(model.intercept_)
+    b = float(model.coef_[0])
+
+    # valida b: mean-reverting exige 0<b<1
+    if not (np.isfinite(a) and np.isfinite(b) and (1e-6 < b < 1.0 - 1e-9)):
+        return None
+
+    # 4) resíduos e variância
+    zeta = y - model.predict(X_lag)
+    var_zeta = float(np.var(zeta, ddof=1))
+    if not np.isfinite(var_zeta) or var_zeta <= 0:
+        return None
+
+    # 5) parâmetros OU (dt = 1 dia)
+    kappa_daily = float(-np.log(b))               # por dia
+    if not np.isfinite(kappa_daily) or kappa_daily <= eps_kappa_floor:
+        return None
+    kappa_ann = float(kappa_daily * trading_days)
+
+    m = float(a / (1.0 - b))
+    sigma_eq = float(np.sqrt(var_zeta / (1.0 - b**2)))
+    if not np.isfinite(sigma_eq) or sigma_eq <= 0:
+        return None
+
+    X_T = float(Xk[-1])
+
+    # 6) ajuste do modified s-score
+    adj = float(alpha_daily / (kappa_daily * sigma_eq))
+    if not np.isfinite(adj):
+        return None
+
+    return m, X_T, kappa_ann, sigma_eq, alpha_daily, adj
+
+def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame, kappa_min: float = 252.0/30.0, use_drift: bool = True, ma_window: int = 60): 
     """
     - Para cada ação: regressão ação~PCs → resíduos → OU → (a,b,var, kappa, sigma_eq)
     - Calcula m_i = a/(1-b) por ação válida
     - Centraliza m_i: m_i* = m_i - mean_j(m_j)
-    - s_i = Xt - m_i* / sigma_eq_i
+    - s_i = Xt - m_i* / sigma_eq_i - drift (opcional)
     Retorna:
       s_scores_t (Series por ação), betas_t (dict ação->vetor de betas) de todas as ações naquele dia
     """
@@ -188,11 +326,9 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
     
     stocks = list(returns.columns)
     s_t = pd.Series(index=stocks, dtype=float)
-    betas_t, m_map, sigma_eq_map, X_T_map, u_map = {}, {}, {},{}, {}
+    betas_t, sigma_eq_map, u_map, adj_map = {}, {}, {},{}
 
-    #X_mat = factors.values                   # tabela dos retornos dos PCs
-    X_df = factors.copy()
-
+    X_df = factors.copy()  # tabela dos retornos dos PCs
 
     for stock in stocks:
         y_ser = returns[stock]
@@ -204,25 +340,35 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
         y = df["y"].values
 
         beta, eps = regress_action_on_pcs(X, y)
-        ou = estimate_ou_from_cumsum(eps)          #  return m, X_T, var_zeta, kappa_ann, sigma_eq
-        if ou is None:
-            continue
 
-        m, X_T, var_zeta, kappa_ann, sigma_eq = ou
+        if use_drift:
+            ou = estimate_ou_from_cumsum_with_drift(eps,ma_window=ma_window)
+            # retorna: m, X_T, kappa_ann, sigma_eq, alpha_daily, adj
+            if ou is None:
+                continue
+            m, X_T, kappa_ann, sigma_eq, alpha_daily, adj = ou
+        else:
+            ou = estimate_ou_from_cumsum(eps)  # sua função antiga
+            if ou is None:
+                continue
+            m, X_T, var_zeta, kappa_ann, sigma_eq = ou
+            adj = 0.0
+        
+        # filtro do paper para evitar ações com OU muito lento (kappa baixo)
         if kappa_ann <= kappa_min:
             # reverte devagar demais segundo o critério do paper
             continue
 
-        m_map[stock] = m
         sigma_eq_map[stock] = sigma_eq
         betas_t[stock] = beta
-        X_T_map[stock] = X_T
+        adj_map[stock] = adj
+
         u = X_T - m
         if np.isfinite(u) and np.isfinite(sigma_eq) and sigma_eq > 0:
             u_map[stock] = u
 
-    if not m_map:
-        return s_t, betas_t  # vazio
+    if not u_map:
+        return s_t, betas_t, adj_map  # vazio
 
     # centralização cross-sectional em U = (X_t - m) 
     u_bar = np.mean(list(u_map.values()))
@@ -231,11 +377,13 @@ def compute_s_scores_cross_sectional(returns: pd.DataFrame,factors: pd.DataFrame
         u_centered = u - u_bar
         #s_val = u / sigma_eq_map[stock]  # s_score do paper
         s_val = u_centered / sigma_eq_map[stock] # s_score do paper centralizado (melhor)
+        # drift correction (paper): s_mod = s - alpha/(kappa*sigma_eq)
+        s_mod = s_val - adj_map.get(stock, 0.0)
 
-        if np.isfinite(s_val):
-            s_t.loc[stock] = s_val
+        if np.isfinite(s_mod):
+            s_t.loc[stock] = s_mod
 
-    return s_t, betas_t
+    return s_t, betas_t, adj_map
 
 # =============================================================================
 # Regras de posição, hedge e PnL
@@ -544,7 +692,8 @@ def compute_stock_specific_thresholds(
 # =============================================================================
 def pca_portfolio_spy_hedge(
     returns: pd.DataFrame,
-    returns_spy: pd.DataFrame,
+    returns_bench: pd.DataFrame,
+    benchmark: str = "SPY",
     num_pc: int = 15,
     s_win: int = 60,
     # thresholds do paper:
@@ -556,6 +705,9 @@ def pca_portfolio_spy_hedge(
     rebalanceamento_dias: int = 1,
     kappa_min: float = 252.0/30.0,
     plot: bool = True,
+    use_drift: bool = True,
+    ma_window: int = 60,
+    verbose: bool = True
 ):
     
     # Fatores PCA (rolling) com janela de 60 dias
@@ -573,7 +725,9 @@ def pca_portfolio_spy_hedge(
     
     # ------------- loop temporal -------------
     for t in usable_index:
-        print(f"Tempo : {t}")
+        if verbose:
+            print(f"Tempo : {t}")
+            
         # janela [t-s_win, t] para estimação OU
         ret = returns.loc[:t].iloc[-s_win:].copy()
         ret = padronizar_janela(ret)
@@ -585,10 +739,12 @@ def pca_portfolio_spy_hedge(
             continue
 
         # s-scores para o dia t (com centralização) + betas para hedge
-        s_t, betas_t = compute_s_scores_cross_sectional(
+        s_t, betas_t, adj_map = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
             kappa_min=kappa_min,
+            use_drift=use_drift,
+            ma_window=ma_window
         )
 
         # guarda s-scores e betas válidos
@@ -645,16 +801,16 @@ def pca_portfolio_spy_hedge(
     )
 
     # comparação com SPY (buy&hold em retorno simples)
-    spy = returns_spy.iloc[s_win:].copy()
-    cumret_spy = (1.0 + spy).cumprod()
+    bench = returns_bench.iloc[s_win:].copy()
+    cumret_bench = (1.0 + bench).cumprod()
 
     if plot:
         plt.figure(figsize=(18, 6))
         plt.grid(True)
         plt.plot(cumret_algo.index, cumret_algo, label='Algo (PCA-OU)')
-        plt.plot(cumret_spy.index,  cumret_spy,  label='SPY')
+        plt.plot(cumret_bench.index,  cumret_bench,  label=benchmark)
         plt.legend()
-        plt.title(f'Estratégia PCA/OU vs SPY | PCs={num_pc}, s_win={s_win}')
+        plt.title(f'Estratégia PCA/OU vs {benchmark} | PCs={num_pc}, s_win={s_win}')
         plt.show()
 
     return {
@@ -666,7 +822,8 @@ def pca_portfolio_spy_hedge(
         'ret_net': ret_net,             
         'Factor_PCA': Factor_PCA,       
         'pcs': pcs,                     
-        'turnover': turnover
+        'turnover': turnover,
+        'adj_map': adj_map
     }
 
 def pca_portfolio_spy(
@@ -683,6 +840,8 @@ def pca_portfolio_spy(
     rebalanceamento_dias: int = 1,
     kappa_min: float = 252.0/30.0,
     plot: bool = True,
+    use_drift: bool = True,
+    ma_window: int = 60
 ):
     
     # Fatores PCA (rolling) com janela de 60 dias
@@ -712,10 +871,12 @@ def pca_portfolio_spy(
             continue
 
         # s-scores para o dia t (com centralização) + betas para hedge
-        s_t, betas_t = compute_s_scores_cross_sectional(
+        s_t, betas_t, adj_map = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
             kappa_min=kappa_min,
+            use_drift=use_drift,
+            ma_window=ma_window
         )
 
         # guarda s-scores e betas válidos
@@ -791,7 +952,139 @@ def pca_portfolio_spy(
         'ret_net': ret_net,             
         'Factor_PCA': Factor_PCA,       
         'pcs': pcs,                     
-        'turnover': turnover
+        'turnover': turnover,
+        'adj_map': adj_map
+    }
+
+def pca_portfolio_spy2(
+    returns: pd.DataFrame,
+    returns_spy: pd.DataFrame,
+    num_pc: int = 15,
+    s_win: int = 60,
+    # thresholds do paper:
+    sbo: float = 1.25,
+    sso: float = 1.25,
+    sbc: float = 0.50,
+    ssc: float = 0.50,
+    eps_cost: float = 0.0005,
+    rebalanceamento_dias: int = 1,
+    kappa_min: float = 252.0/30.0,
+    plot: bool = True,
+    use_drift: bool = True,
+    ma_window: int = 60
+):
+    
+    # Fatores PCA (rolling) com janela de 60 dias
+    Factor_PCA, evals_df, W_pcs = compute_pca_factor_returns_with_weights(returns, window_pca=60, n_factors=num_pc)
+    
+    pcs = [f"eig{i+1}" for i in range(num_pc)]
+    stocks = [c for c in returns.columns]
+    usable_index = returns.iloc[s_win:].index
+
+    # tabelas
+    s_scores = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
+    betas = pd.DataFrame(index=usable_index, columns=stocks, dtype=object)
+    algo_pos = pd.DataFrame(index=usable_index, columns=stocks, dtype=float)
+    
+    # ------------- loop temporal -------------
+    for t in usable_index:
+        print(f"Tempo : {t}")
+        # janela [t-s_win, t] para estimação OU
+        ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = padronizar_janela(ret)
+        factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
+        factor = padronizar_janela(factor)
+        
+        # checagem: PCs não podem ter NaN nessa janela padronizada
+        if factor[pcs].isnull().any().any():
+            continue
+
+        # s-scores para o dia t (com centralização) + betas para hedge
+        s_t, betas_t, adj_map = compute_s_scores_cross_sectional(
+            returns=ret,
+            factors=factor,
+            kappa_min=kappa_min,
+            use_drift=use_drift,
+            ma_window=ma_window
+        )
+
+        # guarda s-scores e betas válidos
+        s_scores.loc[t, s_t.index] = s_t
+        for k, v in betas_t.items():
+            betas.loc[t, k] = v
+
+        # atualiza posições discretas com base no s-score de cada ação
+        prev = algo_pos.shift(1).loc[t]
+        if prev.isna().all():
+            prev = pd.Series(0.0, index=stocks) #caso inicial
+
+        # --- REBALANCEAMENTO A CADA x DIAS ÚTEIS ---
+        day_idx = algo_pos.index.get_loc(t)
+
+        if day_idx % rebalanceamento_dias == 0:
+    
+            # recalcula posições
+            new_pos = []
+            for stock in stocks:
+                s_val = s_t.get(stock, np.nan)
+
+                new_pos.append(position_from_s(
+                    s=s_val,
+                    pos_prev=prev.get(stock, 0.0),
+                    sbo=sbo,
+                    sso=sso,
+                    sbc=sbc,
+                    ssc=ssc,  
+                ))
+
+            algo_pos.loc[t] = new_pos
+
+        else:
+            # mantém a posição anterior (sem trades)
+            algo_pos.loc[t] = prev
+
+    # remove linhas sem s-score algum
+    null_idx = s_scores.index[s_scores.isnull().all(axis=1)]
+    s_scores = s_scores.drop(index=null_idx)
+    betas = betas.drop(index=null_idx)
+    algo_pos = algo_pos.drop(index=null_idx)
+    
+    # pesos iguais por lado, não ter viés direcional do mercado (soma zero)
+    algo_weights = algo_pos.apply(equal_weight_by_side, axis=1, result_type="broadcast")
+    w_all = normalize_gross(algo_weights)
+    
+    ret_net, cumret_algo, turnover = compute_pnl_with_costs(
+        w_all=w_all,
+        returns_mod=returns,
+        eps_per_turnover=eps_cost,
+    )
+
+    # comparação com SPY (buy&hold em retorno simples)
+    spy = returns_spy.iloc[s_win:].copy()
+    cumret_spy = (1.0 + spy).cumprod()
+
+    if plot:
+        plt.figure(figsize=(18, 6))
+        plt.grid(True)
+        plt.plot(cumret_algo.index, cumret_algo, label='Algo (PCA-OU)')
+        plt.plot(cumret_spy.index,  cumret_spy,  label='SPY')
+        plt.legend()
+        plt.title(f'Estratégia PCA/OU vs SPY | PCs={num_pc}, s_win={s_win}')
+        plt.show()
+
+    return {
+        'cumret_algo': cumret_algo,
+        's_scores': s_scores,
+        'algo_weights': algo_weights,
+        'pc_evals': evals_df,
+        'pc_weights': W_pcs,
+        "w_all": w_all,  
+        'betas': betas,                 
+        'ret_net': ret_net,             
+        'Factor_PCA': Factor_PCA,       
+        'pcs': pcs,                     
+        'turnover': turnover,
+        'adj_map': adj_map
     }
 
 def pca_portfolio_spy_var(
@@ -814,6 +1107,8 @@ def pca_portfolio_spy_var(
     rebalanceamento_dias: int = 1,
     kappa_min: float = 252.0/30.0,
     plot: bool = True,
+    use_drift: bool = True,
+    ma_window: int = 60
 ):
     
     # Fatores PCA (rolling) com janela de 60 dias
@@ -843,10 +1138,12 @@ def pca_portfolio_spy_var(
             continue
 
         # s-scores para o dia t (com centralização) + betas para hedge
-        s_t, betas_t = compute_s_scores_cross_sectional(
+        s_t, betas_t, adj_map = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
             kappa_min=kappa_min,
+            use_drift=use_drift,
+            ma_window=ma_window
         )
 
         # guarda s-scores e betas válidos
@@ -962,7 +1259,8 @@ def pca_portfolio_spy_var(
         'ret_net': ret_net,             
         'Factor_PCA': Factor_PCA,       
         'pcs': pcs,                     
-        'turnover': turnover
+        'turnover': turnover,
+        'adj_map': adj_map
     }
 
 def pca_portfolio_spy_adaptive_pcs(
@@ -987,6 +1285,8 @@ def pca_portfolio_spy_adaptive_pcs(
     rebalanceamento_dias: int = 1,
     kappa_min: float = 252.0/30.0,
     plot: bool = True,
+    use_drift: bool = True,
+    ma_window: int = 60
 ):
     """
     Backtest com número de PCs ADAPTATIVO (varia ao longo do tempo).
@@ -1037,10 +1337,12 @@ def pca_portfolio_spy_adaptive_pcs(
             continue
         
         # s-scores
-        s_t, betas_t = compute_s_scores_cross_sectional(
+        s_t, betas_t, adj_map = compute_s_scores_cross_sectional(
             returns=ret,
             factors=factor,
             kappa_min=kappa_min,
+            use_drift=use_drift,
+            ma_window=ma_window
         )
         
         # guarda s-scores e betas válidos
@@ -1183,6 +1485,7 @@ def pca_portfolio_spy_adaptive_pcs(
         "Factor_PCA": Factor_PCA,
         "num_pcs_used": num_pcs_used,
         "turnover": turnover,
+        'adj_map': adj_map
     }
 
 # =============================================================================
