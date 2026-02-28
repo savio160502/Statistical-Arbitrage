@@ -963,7 +963,7 @@ def pca_portfolio_adaptive_pcs(
     variance_target: float = 0.60,  
     min_pcs: int = 5,
     max_pcs: int = 35,
-    s_win: int = 60,
+    s_win: int = 70,
     # thresholds adaptativos
     adaptive_thresholds: bool = False,
     adaptive_window: int = 252,
@@ -1015,17 +1015,16 @@ def pca_portfolio_adaptive_pcs(
         num_pc_t = num_pcs_used.get(t, np.nan)
         if pd.isna(num_pc_t):
             num_pc_t = max_pcs
-        num_pc_t = int(np.clip(int(num_pc_t), min_pcs, max_pcs))
         
+        num_pc_t = int(np.clip(int(num_pc_t), min_pcs, max_pcs))
         pcs_t = [f"eig{i+1}" for i in range(num_pc_t)]
         
         # janela para OU/regressões até t [t-s_win, t] 
         ret = returns.loc[:t].iloc[-s_win:].copy()
         ret = padronizar_janela(ret)
-        
         factor = Factor_PCA.loc[:t, pcs_t].iloc[-s_win:].copy()
         factor = padronizar_janela(factor)
-        
+
         # checagem: PCs não podem ter NaN
         if factor.isnull().any().any():
             continue
