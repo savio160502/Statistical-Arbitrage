@@ -763,7 +763,7 @@ def pca_portfolio_hedge(
         plt.plot(cumret_algo.index, cumret_algo, label='Algo (PCA-OU)')
         plt.plot(cumret_bench.index,  cumret_bench,  label=benchmark)
         plt.legend()
-        plt.title(f'Estratégia PCA/OU vs {benchmark} | PCs={num_pc}, s_win={s_win}')
+        plt.title(f'Estratégia PCA/OU vs {benchmark}')
         plt.show()
 
     return {
@@ -786,16 +786,10 @@ def pca_portfolio_quantil(
     num_pc: int = 15,
     s_win: int = 60,
     # parâmetros para thresholds adaptativos
-    adaptive_thresholds: bool = False,
     adaptive_window: int = 252,
     percentile_open: float = 0.15,
     percentile_close_short: float = 0.35,
     percentile_close_long: float = 0.45,
-    # thresholds do paper:
-    sbo: float = 1.25,
-    sso: float = 1.25,
-    sbc: float = 0.50,
-    ssc: float = 0.50,
     eps_cost: float = 0.0005,
     rebalanceamento_dias: int = 1,
     kappa_min: float = 252.0/30.0,
@@ -854,31 +848,24 @@ def pca_portfolio_quantil(
 
         if day_idx % rebalanceamento_dias == 0:
             #  CALCULAR THRESHOLDS (adaptativo ou fixo)
-            if adaptive_thresholds:
-                # Usar histórico de s-scores até t (inclusive)
-                s_hist = s_scores.loc[:t]
-                
-                # Calcular thresholds adaptativos
-                thresh_dict = compute_stock_specific_thresholds(
-                    s_scores_hist=s_hist,
-                    window=adaptive_window,
-                    percentile_open=percentile_open,
-                    percentile_close_short=percentile_close_short,
-                    percentile_close_long=percentile_close_long,
-                )
-                
-                # Pegar thresholds do dia t (última linha)
-                sbo_t = thresh_dict['sbo'].loc[t]
-                sso_t = thresh_dict['sso'].loc[t]
-                sbc_t = thresh_dict['sbc'].loc[t]
-                ssc_t = thresh_dict['ssc'].loc[t]
-                
-            else:
-                # Usar thresholds fixos (mesmo para todas as ações)
-                sbo_t = pd.Series(sbo, index=stocks)
-                sso_t = pd.Series(sso, index=stocks)
-                sbc_t = pd.Series(sbc, index=stocks)
-                ssc_t = pd.Series(-ssc, index=stocks) 
+            
+            # Usar histórico de s-scores até t (inclusive)
+            s_hist = s_scores.loc[:t]
+            
+            # Calcular thresholds adaptativos
+            thresh_dict = compute_stock_specific_thresholds(
+                s_scores_hist=s_hist,
+                window=adaptive_window,
+                percentile_open=percentile_open,
+                percentile_close_short=percentile_close_short,
+                percentile_close_long=percentile_close_long,
+            )
+            
+            # Pegar thresholds do dia t (última linha)
+            sbo_t = thresh_dict['sbo'].loc[t]
+            sso_t = thresh_dict['sso'].loc[t]
+            sbc_t = thresh_dict['sbc'].loc[t]
+            ssc_t = thresh_dict['ssc'].loc[t]
                 
             # recalcula posições
             new_pos = []
@@ -940,7 +927,7 @@ def pca_portfolio_quantil(
         plt.plot(cumret_algo.index, cumret_algo, label='Algo (PCA-OU)')
         plt.plot(cumret_bench.index,  cumret_bench,  label=benchmark)
         plt.legend()
-        plt.title(f'Estratégia PCA/OU vs {benchmark} | PCs={num_pc}, s_win={s_win}')
+        plt.title(f'Estratégia PCA/OU vs {benchmark}')
         plt.show()
 
     return {
