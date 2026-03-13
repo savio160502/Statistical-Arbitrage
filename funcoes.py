@@ -683,9 +683,7 @@ def pca_portfolio_hedge(
             
         # janela [t-s_win, t] para estimação OU
         ret = returns.loc[:t].iloc[-s_win:].copy()
-        ret = padronizar_janela(ret)
         factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
-        factor = padronizar_janela(factor)
         
         # checagem: PCs não podem ter NaN nessa janela padronizada
         if factor[pcs].isnull().any().any():
@@ -786,7 +784,7 @@ def pca_portfolio_quantil(
     num_pc: int = 15,
     s_win: int = 60,
     # parâmetros para thresholds adaptativos
-    adaptive_window: int = 252,
+    adaptive_window: int = 60,
     percentile_open: float = 0.15,
     percentile_close_short: float = 0.35,
     percentile_close_long: float = 0.45,
@@ -816,9 +814,7 @@ def pca_portfolio_quantil(
         print(f"Tempo : {t}")
         # janela [t-s_win, t] para estimação OU
         ret = returns.loc[:t].iloc[-s_win:].copy()
-        ret = padronizar_janela(ret)
         factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
-        factor = padronizar_janela(factor)
         
         # checagem: PCs não podem ter NaN nessa janela padronizada
         if factor[pcs].isnull().any().any():
@@ -953,7 +949,7 @@ def pca_portfolio_adaptive_pcs(
     s_win: int = 70,
     # thresholds adaptativos
     adaptive_thresholds: bool = False,
-    adaptive_window: int = 252,
+    adaptive_window: int = 60,
     percentile_open: float = 0.15,
     percentile_close_short: float = 0.35,
     percentile_close_long: float = 0.45,
@@ -1008,12 +1004,15 @@ def pca_portfolio_adaptive_pcs(
         
         # janela para OU/regressões até t [t-s_win, t] 
         ret = returns.loc[:t].iloc[-s_win:].copy()
-        ret = padronizar_janela(ret)
         factor = Factor_PCA.loc[:t, pcs_t].iloc[-s_win:].copy()
-        factor = padronizar_janela(factor)
-
-        # checagem: PCs não podem ter NaN
-        if factor.isnull().any().any():
+        # checagem: PCs não podem ter NaN nessa janela
+        factor = factor.dropna(axis=1, how="any")
+        
+        # segurança extra: padronização pode gerar NaN se std=0
+        #factor = factor.dropna(axis=1, how="any")
+        if factor.shape[1] < min_pcs:
+            algo_pos.loc[t] = prev
+            hedge_pcs.loc[t] = hedge_pcs.shift(1).loc[t] if t != usable_index[0] else np.zeros(max_pcs, dtype=float)
             continue
         
         # s-scores
@@ -1160,6 +1159,7 @@ def pca_portfolio_adaptive_pcs(
         "algo_weights": algo_weights,
         "hedge_pcs": hedge_pcs,
         "w_all": w_all,
+        "algo_pos": algo_pos,
         "betas": betas,
         "ret_net": ret_net,
         "Factor_PCA": Factor_PCA,
