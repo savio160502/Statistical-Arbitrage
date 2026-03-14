@@ -1144,7 +1144,7 @@ def pca_portfolio_adaptive_pcs(
     )
     
     # comparação com SPY
-    bench = returns_bench.reindex(cumret_algo.index).fillna(0.0)
+    bench = returns_bench.iloc[s_win:].copy()
     cumret_bench = (1.0 + bench).cumprod()
     
     if plot:
