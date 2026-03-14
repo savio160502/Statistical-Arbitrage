@@ -67,6 +67,8 @@ def compute_pca_factor_returns(returns: pd.DataFrame, window_pca: int = 60, n_fa
         t = dates[i]                         # data-alvo
 
         Rw = returns.loc[t_hist]
+        Rw = Rw.dropna(axis=1, how='any')    # exclui colunas com NaN na janela
+
         Zw = padronizar_janela(Rw)
         Zw = Zw.dropna(axis=1, how='any')    # exclui colunas com NaN na janela
         Zw = Zw.dropna(axis=0, how='all')   # exclui linhas com NaN na janela
@@ -573,6 +575,8 @@ def compute_pca_factor_returns_adaptive(
         t = dates[i]
         
         Rw = returns.loc[t_hist]
+        Rw = Rw.dropna(axis=1, how='any')    # exclui colunas com NaN na janela
+        
         Zw = padronizar_janela(Rw)
         Zw = Zw.dropna(axis=1, how='any').dropna(axis=0, how='all')
         
@@ -649,6 +653,7 @@ def pca_portfolio_hedge(
     benchmark: str = "SPY",
     num_pc: int = 15,
     s_win: int = 60,
+    window_pca: int = 60,
     # thresholds do paper:
     sbo: float = 1.25,
     sso: float = 1.25,
@@ -665,7 +670,7 @@ def pca_portfolio_hedge(
     
     # Fatores PCA (rolling) com janela de 60 dias
     Factor_PCA = compute_pca_factor_returns(
-    returns, window_pca=60, n_factors=num_pc)
+    returns, window_pca=window_pca, n_factors=num_pc)
     
     pcs = [f"eig{i+1}" for i in range(num_pc)]
     stocks = [c for c in returns.columns]
@@ -683,8 +688,11 @@ def pca_portfolio_hedge(
             
         # janela [t-s_win, t] para estimação OU
         ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = ret.dropna(axis=1, how='any')  # excluir ações com NaN na janela
+        ret = padronizar_janela(ret)  # padroniza a janela para os retornos
+        ret = ret.dropna(axis=1, how='any')
         factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
-        
+        factor = padronizar_janela(factor)  # padroniza a janela para os fatores PCA
         # checagem: PCs não podem ter NaN nessa janela padronizada
         if factor[pcs].isnull().any().any():
             continue
@@ -783,8 +791,9 @@ def pca_portfolio_quantil(
     benchmark: str = "SPY",
     num_pc: int = 15,
     s_win: int = 60,
+    window_pca: int = 60,
     # parâmetros para thresholds adaptativos
-    adaptive_window: int = 60,
+    adaptive_window: int = 252,
     percentile_open: float = 0.15,
     percentile_close_short: float = 0.35,
     percentile_close_long: float = 0.45,
@@ -798,7 +807,7 @@ def pca_portfolio_quantil(
     
     # Fatores PCA (rolling) com janela de 60 dias
     Factor_PCA = compute_pca_factor_returns(
-    returns, window_pca=60, n_factors=num_pc)
+    returns, window_pca=window_pca, n_factors=num_pc)
     
     pcs = [f"eig{i+1}" for i in range(num_pc)]
     stocks = [c for c in returns.columns]
@@ -814,7 +823,11 @@ def pca_portfolio_quantil(
         print(f"Tempo : {t}")
         # janela [t-s_win, t] para estimação OU
         ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = ret.dropna(axis=1, how='any')  # excluir ações com NaN na janela
+        ret = padronizar_janela(ret)  # padroniza a janela para os retornos
+        ret = ret.dropna(axis=1, how='any')
         factor = Factor_PCA.loc[:t].iloc[-s_win:].copy()
+        factor = padronizar_janela(factor)  # padroniza a janela para os fatores PCA
         
         # checagem: PCs não podem ter NaN nessa janela padronizada
         if factor[pcs].isnull().any().any():
@@ -947,9 +960,10 @@ def pca_portfolio_adaptive_pcs(
     min_pcs: int = 5,
     max_pcs: int = 35,
     s_win: int = 70,
+    window_pca: int = 60,
     # thresholds adaptativos
     adaptive_thresholds: bool = False,
-    adaptive_window: int = 60,
+    adaptive_window: int = 252,
     percentile_open: float = 0.15,
     percentile_close_short: float = 0.35,
     percentile_close_long: float = 0.45,
@@ -972,7 +986,7 @@ def pca_portfolio_adaptive_pcs(
     # Fatores PCA ADAPTATIVOS
     Factor_PCA, num_pcs_used = compute_pca_factor_returns_adaptive(
         returns,
-        window_pca=60,
+        window_pca=window_pca,
         variance_target=variance_target,
         min_factors=min_pcs,
         max_factors=max_pcs,
@@ -1004,12 +1018,15 @@ def pca_portfolio_adaptive_pcs(
         
         # janela para OU/regressões até t [t-s_win, t] 
         ret = returns.loc[:t].iloc[-s_win:].copy()
+        ret = ret.dropna(axis=1, how='any')  # excluir ações com NaN na janela
+        ret = padronizar_janela(ret)  # padroniza a janela para os retornos
+        ret = ret.dropna(axis=1, how='any')
         factor = Factor_PCA.loc[:t, pcs_t].iloc[-s_win:].copy()
         # checagem: PCs não podem ter NaN nessa janela
         factor = factor.dropna(axis=1, how="any")
-        
-        # segurança extra: padronização pode gerar NaN se std=0
-        #factor = factor.dropna(axis=1, how="any")
+        factor = padronizar_janela(factor)
+        factor = factor.dropna(axis=1, how="any")
+
         if factor.shape[1] < min_pcs:
             algo_pos.loc[t] = prev
             hedge_pcs.loc[t] = hedge_pcs.shift(1).loc[t] if t != usable_index[0] else np.zeros(max_pcs, dtype=float)
