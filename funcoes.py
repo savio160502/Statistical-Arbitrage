@@ -759,9 +759,20 @@ def pca_portfolio_hedge(
         eps_per_turnover=eps_cost,
     )
 
-    # comparação com SPY (buy&hold em retorno simples)
-    bench = returns_bench.iloc[s_win:].copy()
-    cumret_bench = (1.0 + bench).cumprod()
+    cumret_algo = cumret_algo.iloc[s_win:]
+
+    # benchmark completo
+    cumret_bench = (1.0 + returns_bench).cumprod()
+    # comparação com SPY
+    
+    # alinhar datas
+    common_idx = cumret_algo.index.intersection(cumret_bench.index)
+    cumret_algo = cumret_algo.loc[common_idx]
+    cumret_bench = cumret_bench.loc[common_idx]
+
+    # normalizar para começar em 1
+    cumret_algo = cumret_algo / cumret_algo.iloc[0]
+    cumret_bench = cumret_bench / cumret_bench.iloc[0]
 
     if plot:
         plt.figure(figsize=(18, 6))
@@ -926,9 +937,20 @@ def pca_portfolio_quantil(
         eps_per_turnover=eps_cost,
     )
 
-    # comparação com SPY (buy&hold em retorno simples)
-    bench = returns_bench.iloc[s_win:].copy()
-    cumret_bench = (1.0 + bench).cumprod()
+    cumret_algo = cumret_algo.iloc[s_win:]
+
+    # benchmark completo
+    cumret_bench = (1.0 + returns_bench).cumprod()
+    # comparação com SPY
+    
+    # alinhar datas
+    common_idx = cumret_algo.index.intersection(cumret_bench.index)
+    cumret_algo = cumret_algo.loc[common_idx]
+    cumret_bench = cumret_bench.loc[common_idx]
+
+    # normalizar para começar em 1
+    cumret_algo = cumret_algo / cumret_algo.iloc[0]
+    cumret_bench = cumret_bench / cumret_bench.iloc[0]
 
     if plot:
         plt.figure(figsize=(18, 6))
@@ -1143,10 +1165,21 @@ def pca_portfolio_adaptive_pcs(
         eps_per_turnover=eps_cost,
     )
     
+    cumret_algo = cumret_algo.iloc[s_win:]
+
+    # benchmark completo
+    cumret_bench = (1.0 + returns_bench).cumprod()
     # comparação com SPY
-    bench = returns_bench.iloc[s_win:].copy()
-    cumret_bench = (1.0 + bench).cumprod()
     
+    # alinhar datas
+    common_idx = cumret_algo.index.intersection(cumret_bench.index)
+    cumret_algo = cumret_algo.loc[common_idx]
+    cumret_bench = cumret_bench.loc[common_idx]
+
+    # normalizar para começar em 1
+    cumret_algo = cumret_algo / cumret_algo.iloc[0]
+    cumret_bench = cumret_bench / cumret_bench.iloc[0]
+
     if plot:
         fig, axes = plt.subplots(2, 1, figsize=(18, 10))
         
