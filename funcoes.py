@@ -616,34 +616,6 @@ def compute_pca_factor_returns_adaptive(
     
     return F.dropna(how="all"), num_factors_series.dropna()
 
-def compute_stock_specific_thresholds(
-    s_scores_hist: pd.DataFrame,
-    window: int = 252,
-    percentile_open: float = 0.15,
-    percentile_close_short: float = 0.35,
-    percentile_close_long: float = 0.45,
-    min_sbo: float = 1.0,
-    min_sso: float = 1.0,
-    min_sbc: float = 0.6,
-    max_ssc: float = -0.4,
-):
-    """
-    Calcula thresholds adaptativos específicos para cada ação.
-    """
-    # Percentis rolling por ação (coluna a coluna)
-    sbo = s_scores_hist.rolling(window, min_periods=60).quantile(percentile_open).abs()
-    sso = s_scores_hist.rolling(window, min_periods=60).quantile(1 - percentile_open)
-    sbc = s_scores_hist.rolling(window, min_periods=60).quantile(1 - percentile_close_short)
-    ssc = -s_scores_hist.rolling(window, min_periods=60).quantile(percentile_close_long)
-    
-    # Aplicar limites mínimos/máximos
-    sbo = sbo.clip(lower=min_sbo).fillna(1.25)
-    sso = sso.clip(lower=min_sso).fillna(1.25)
-    sbc = sbc.clip(lower=min_sbc).fillna(0.75)
-    ssc = ssc.clip(upper=max_ssc).fillna(-0.50)
-    
-    return {'sbo': sbo, 'sso': sso, 'sbc': sbc, 'ssc': ssc}
-
 # =============================================================================
 # Função principal (backtest) sem comentário - mais rápida
 # =============================================================================
@@ -805,7 +777,7 @@ def pca_portfolio_quantil(
     window_pca: int = 60,
     # parâmetros para thresholds adaptativos
     adaptive_window: int = 252,
-    percentile_open: float = 0.15,
+    percentile_open: float = 0.10,
     percentile_close_short: float = 0.35,
     percentile_close_long: float = 0.45,
     eps_cost: float = 0.0005,
@@ -813,7 +785,8 @@ def pca_portfolio_quantil(
     kappa_min: float = 252.0/30.0,
     plot: bool = True,
     use_drift: bool = True,
-    ma_window: int = 60
+    ma_window: int = 60,
+    verbose: bool = True
 ):
     
     # Fatores PCA (rolling) com janela de 60 dias
@@ -831,7 +804,9 @@ def pca_portfolio_quantil(
     
     # ------------- loop temporal -------------
     for t in usable_index:
-        print(f"Tempo : {t}")
+        if verbose:
+            print(f"Tempo : {t}")
+
         # janela [t-s_win, t] para estimação OU
         ret = returns.loc[:t].iloc[-s_win:].copy()
         ret = ret.dropna(axis=1, how='any')  # excluir ações com NaN na janela
@@ -867,26 +842,15 @@ def pca_portfolio_quantil(
         day_idx = algo_pos.index.get_loc(t)
 
         if day_idx % rebalanceamento_dias == 0:
-            #  CALCULAR THRESHOLDS (adaptativo ou fixo)
-            
-            # Usar histórico de s-scores até t (inclusive)
-            s_hist = s_scores.loc[:t]
-            
             # Calcular thresholds adaptativos
-            thresh_dict = compute_stock_specific_thresholds(
-                s_scores_hist=s_hist,
-                window=adaptive_window,
-                percentile_open=percentile_open,
-                percentile_close_short=percentile_close_short,
-                percentile_close_long=percentile_close_long,
-            )
-            
-            # Pegar thresholds do dia t (última linha)
-            sbo_t = thresh_dict['sbo'].loc[t]
-            sso_t = thresh_dict['sso'].loc[t]
-            sbc_t = thresh_dict['sbc'].loc[t]
-            ssc_t = thresh_dict['ssc'].loc[t]
-                
+            valid_stocks = s_t.index
+            window_scores = s_scores.loc[:t, valid_stocks].iloc[-adaptive_window:]
+
+            sbo_t = window_scores.quantile(percentile_open).abs().clip(lower=1.0).fillna(1.25)
+            sso_t = window_scores.quantile(1 - percentile_open).clip(lower=1.0).fillna(1.25)
+            sbc_t = window_scores.quantile(1 - percentile_close_short).clip(lower=0.50).fillna(0.50)
+            ssc_t = window_scores.quantile(percentile_close_long).abs().clip(lower=0.50).fillna(0.50)
+              
             # recalcula posições
             new_pos = []
             for stock in stocks:
@@ -999,7 +963,8 @@ def pca_portfolio_adaptive_pcs(
     kappa_min: float = 252.0/30.0,
     plot: bool = True,
     use_drift: bool = True,
-    ma_window: int = 60
+    ma_window: int = 60,
+    verbose: bool = True
 ):
     """
     Backtest com número de PCs ADAPTATIVO (varia ao longo do tempo).
@@ -1025,10 +990,12 @@ def pca_portfolio_adaptive_pcs(
     
     # hedge em dimensão fixa max_pcs (preenche só [0:m_t] por dia)
     hedge_pcs = pd.DataFrame(index=usable_index, columns=pcs_all, dtype=float)
+    prev = pd.Series(0.0, index=stocks)
 
     # ------------- loop temporal -------------
     for t in usable_index:
-        print(f"Tempo : {t}")
+        if verbose:
+            print(f"Tempo : {t}")
         
         # Número de PCs usado neste dia
         num_pc_t = num_pcs_used.get(t, np.nan)
@@ -1078,19 +1045,16 @@ def pca_portfolio_adaptive_pcs(
         
         if day_idx % rebalanceamento_dias == 0:
             # Thresholds (adaptativo ou fixo)
+            
             if adaptive_thresholds:
-                s_hist = s_scores.loc[:t]
-                thresh_dict = compute_stock_specific_thresholds(
-                    s_scores_hist=s_hist,
-                    window=adaptive_window,
-                    percentile_open=percentile_open,
-                    percentile_close_short=percentile_close_short,
-                    percentile_close_long=percentile_close_long,
-                )
-                sbo_t = thresh_dict['sbo'].loc[t]
-                sso_t = thresh_dict['sso'].loc[t]
-                sbc_t = thresh_dict['sbc'].loc[t]
-                ssc_t = thresh_dict['ssc'].loc[t]
+                # Calcular thresholds adaptativos
+                valid_stocks = s_t.index
+                window_scores = s_scores.loc[:t, valid_stocks].iloc[-adaptive_window:]
+
+                sbo_t = window_scores.quantile(percentile_open).abs().clip(lower=1.0).fillna(1.25)
+                sso_t = window_scores.quantile(1 - percentile_open).clip(lower=1.0).fillna(1.25)
+                sbc_t = window_scores.quantile(1 - percentile_close_short).clip(lower=0.50).fillna(0.50)
+                ssc_t = window_scores.quantile(percentile_close_long).abs().clip(lower=0.50).fillna(0.50)
             else:
                 sbo_t = pd.Series(sbo, index=stocks)
                 sso_t = pd.Series(sso, index=stocks)
