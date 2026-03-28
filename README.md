@@ -1,30 +1,149 @@
-# Estratégia de Arbitragem Estatística com PCA e Processos de Ornstein-Uhlenbeck
+# 📈 Statistical Arbitrage with PCA and Mean Reversion
 
-Este projeto implementa uma estratégia quantitativa de arbitragem estatística baseada em fatores principais (PCA) e processos de Ornstein–Uhlenbeck aplicados aos resíduos de regressões fatoriais. A estratégia investe em reversão à média, utilizando **s-scores** derivados de modelos AR(1) calibrados sobre janelas móveis dos resíduos.
+Projeto de dissertação desenvolvido na FGV EMAp com foco na construção, implementação e avaliação empírica de uma estratégia de **arbitragem estatística neutra ao mercado**, baseada em fatores extraídos via PCA e modelagem de reversão à média.
 
-## 💡 Objetivo
+---
 
-Desenvolver uma estratégia “market-neutral” baseada exclusivamente em preços históricos, sem uso de ETFs, que:
-- Gera sinais de compra/venda com base em desvios estatísticos (s-score),
-- Modela resíduos como processos OU para detectar reversão,
-- Rebalanceia diariamente com controle de alavancagem,
-- Incorpora custo de fricção de 10 bps por trade.
+## 🧠 Overview
 
-## 📈 Metodologia
+Este projeto propõe uma abordagem quantitativa para explorar ineficiências no mercado acionário através de:
 
-1. **Coleta de dados**: Baixar preços ajustados de ações (ex: S&P 500) com `yfinance`.
-2. **Normalização e PCA**:
-   - Calcular retornos normalizados.
-   - Extrair os 15 principais componentes da matriz de correlação.
-3. **Modelo fatorial**:
-   - Regressão dos retornos das ações sobre os fatores PCA.
-   - Extração dos resíduos diários.
-4. **Modelagem dos resíduos**:
-   - Em janelas móveis (60 dias), modelar resíduos acumulados como processos OU.
-   - Estimar a, b, $\kappa$, m, $\sigma_{eq}$ via regressão AR(1).
-   - Calcular o **s-score**:  $$s = \frac{-m}{\sigma_{eq}} $$
-5. **Backtest**:
-   - Estratégia bang-bang: abre posição total quando |s| > 1.5, fecha quando |s| < 0.5.
-   - PnL diário calculado com rebalanceamento, fricção, alavancagem.
+- Decomposição dos retornos em componentes **sistemáticos e idiossincráticos** via **PCA**
+- Modelagem dos resíduos como processos de **Ornstein–Uhlenbeck**
+- Construção de sinais de trading baseados em **desvios de equilíbrio (s-score)**
+- Implementação de uma estratégia **long–short com neutralização fatorial**
+- Avaliação **out-of-sample** com custos de transação realistas
 
-## ⚙️ Como rodar
+---
+
+## ⚙️ Metodologia
+
+### 1. Extração de fatores (PCA)
+- Aplicação de PCA em janelas móveis
+- Construção de fatores principais (eigenportfólios)
+
+### 2. Regressão e resíduos
+- Regressão dos retornos de cada ativo nos fatores
+- Extração dos resíduos idiossincráticos
+
+### 3. Modelagem OU
+
+O processo de Ornstein–Uhlenbeck é dado por:
+
+\[
+dX_t = \kappa (m - X_t)\,dt + \sigma\,dW_t
+\]
+
+Onde:
+- \(\kappa\): velocidade de reversão à média  
+- \(m\): nível de equilíbrio  
+- \(\sigma\): volatilidade  
+
+### 4. Geração de sinais
+- Construção do **s-score**
+- Estratégia baseada em thresholds:
+  - Entrada: \(|s| > s_{open}\)
+  - Saída: \(|s| < s_{close}\)
+
+### 5. Construção de portfólio
+- Estratégia long–short
+- Neutralização das exposições fatoriais (PCA)
+- Alocação balanceada entre posições
+
+---
+
+## 📊 Resultados
+
+### 🇧🇷 Mercado Brasileiro
+- Performance consistente no curto e longo prazo
+- Evidência de reversão à média nos resíduos idiossincráticos
+
+### 🇺🇸 Mercado Norte-Americano
+- Bons resultados no curto prazo
+- Deterioração significativa no longo prazo
+
+---
+
+## 🔍 Extensões analisadas
+
+- Número adaptativo de fatores (variance explained)
+- Thresholds dinâmicos baseados em quantis
+- Otimização de hiperparâmetros com **Optuna (TPE)**
+- Walk-forward optimization
+
+**Conclusão:** melhorias pontuais, mas sem ganhos robustos no longo prazo no mercado americano.
+
+---
+
+## 🧩 Código do Projeto
+
+O projeto está organizado de forma simples e direta:
+
+- `funcoes.py`  
+  Contém todas as funções principais utilizadas ao longo do projeto, incluindo:
+  - PCA e construção de fatores
+  - Estimação do processo OU
+  - Cálculo de s-score
+  - Construção de portfólio
+  - Backtesting
+
+- `run_backtest.py`  
+  Script responsável pela execução da estratégia no **mercado norte-americano**
+
+- `run_backtest_br.py`  
+  Script responsável pela execução da estratégia no **mercado brasileiro**
+
+---
+
+## 📦 Dependências principais
+
+- numpy  
+- pandas  
+- scikit-learn  
+- statsmodels  
+- matplotlib  
+- optuna  
+
+---
+
+## 📈 Métricas avaliadas
+
+- Sharpe Ratio  
+- CAGR  
+- Drawdown  
+- Turnover  
+- Volatilidade  
+
+---
+
+## 📚 Referências
+
+- Avellaneda, M., & Lee, J. (2008). *Statistical Arbitrage in the U.S. Equities Market*  
+- Gatev, Goetzmann & Rouwenhorst (2006)  
+- Vidyamurthy (2004)  
+
+- KUMAR, N. *Advantages and Disadvantages of Principal Component Analysis in Machine Learning*. 2019.  
+  ⟨http://theprofessionalspoint.blogspot.com/2019/03/advantages-anddisadvantages-of-4.html⟩  
+
+- WANG, J. et al. *A novel combination of PCA and machine learning techniques to select the most important factors for predicting tunnel construction performance*.  
+  Buildings, v. 12, n. 7, 2022.  
+  ⟨https://www.mdpi.com/2075-5309/12/7/919⟩  
+
+---
+
+## 👨‍💻 Autor
+
+**Sávio Amaral**  
+FGV EMAp — Mestrado em Matemática Aplicada e Ciência de Dados  
+
+---
+
+## 📬 Contato
+
+Se quiser discutir o projeto ou estratégias quantitativas, fique à vontade para entrar em contato.
+
+---
+
+## ⚖️ Licença
+
+Este projeto é destinado exclusivamente para fins acadêmicos e educacionais.
