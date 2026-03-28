@@ -6,141 +6,145 @@ Projeto de dissertação desenvolvido na FGV EMAp com foco na construção, impl
 
 ## 🧠 Overview
 
-Este projeto propõe uma abordagem quantitativa para explorar ineficiências no mercado acionário através de:
+Este projeto propõe uma abordagem quantitativa para explorar ineficiências no mercado acionário por meio de:
 
-- Decomposição dos retornos em componentes **sistemáticos e idiossincráticos** via **PCA**
-- Modelagem dos resíduos como processos de **Ornstein–Uhlenbeck**
-- Construção de sinais de trading baseados em **desvios de equilíbrio (s-score)**
-- Implementação de uma estratégia **long–short com neutralização fatorial**
-- Avaliação **out-of-sample** com custos de transação realistas
+- decomposição dos retornos em componentes **sistemáticos e idiossincráticos** via **PCA**;
+- modelagem dos resíduos como processos de **Ornstein–Uhlenbeck**;
+- construção de sinais de negociação com base em medidas de desalinhamento relativo;
+- implementação de uma estratégia **long-short com neutralização fatorial**;
+- avaliação **out-of-sample** com custos de transação realistas.
 
 ---
 
 ## ⚙️ Metodologia
 
 ### 1. Extração de fatores (PCA)
-- Aplicação de PCA em janelas móveis
-- Construção de fatores principais (eigenportfólios)
+
+- aplicação de PCA em janelas móveis;
+- construção de fatores principais a partir da estrutura de covariância/correlação dos retornos;
+- separação entre componentes comuns e componentes idiossincráticos.
 
 ### 2. Regressão e resíduos
-- Regressão dos retornos de cada ativo nos fatores
-- Extração dos resíduos idiossincráticos
+
+- regressão dos retornos de cada ativo sobre os fatores principais;
+- obtenção dos resíduos idiossincráticos;
+- uso desses resíduos como base para a modelagem de reversão à média.
 
 ### 3. Modelagem OU
 
 O processo de Ornstein–Uhlenbeck é dado por:
 
-\[
+$$
 dX_t = \kappa (m - X_t)\,dt + \sigma\,dW_t
-\]
+$$
 
-Onde:
-- \(\kappa\): velocidade de reversão à média  
-- \(m\): nível de equilíbrio  
-- \(\sigma\): volatilidade  
+onde:
+
+- $\kappa$: velocidade de reversão à média;
+- $m$: nível de equilíbrio de longo prazo;
+- $\sigma$: volatilidade do processo.
 
 ### 4. Geração de sinais
-- Construção do **s-score**
-- Estratégia baseada em thresholds:
-  - Entrada: \(|s| > s_{open}\)
-  - Saída: \(|s| < s_{close}\)
+
+- construção do **s-score**;
+- definição de regras de entrada e saída baseadas em limiares:
+
+$$
+|s| > s_{\text{open}}
+$$
+
+para abertura de posição, e
+
+$$
+|s| < s_{\text{close}}
+$$
+
+para encerramento.
 
 ### 5. Construção de portfólio
-- Estratégia long–short
-- Neutralização das exposições fatoriais (PCA)
-- Alocação balanceada entre posições
+
+- estratégia **long-short**;
+- neutralização explícita das exposições fatoriais obtidas via PCA;
+- rebalanceamento e avaliação com custos de transação.
 
 ---
 
 ## 📊 Resultados
 
-### 🇧🇷 Mercado Brasileiro
-- Performance consistente no curto e longo prazo
-- Evidência de reversão à média nos resíduos idiossincráticos
+### 🇧🇷 Mercado brasileiro
 
-### 🇺🇸 Mercado Norte-Americano
-- Bons resultados no curto prazo
-- Deterioração significativa no longo prazo
+- desempenho consistente no curto e no longo prazo;
+- evidência de reversão à média nos componentes idiossincráticos.
+
+### 🇺🇸 Mercado norte-americano
+
+- resultados positivos no curto prazo;
+- deterioração significativa do desempenho no longo prazo.
 
 ---
 
 ## 🔍 Extensões analisadas
 
-- Número adaptativo de fatores (variance explained)
-- Thresholds dinâmicos baseados em quantis
-- Otimização de hiperparâmetros com **Optuna (TPE)**
-- Walk-forward optimization
+- número adaptativo de fatores;
+- limiares dinâmicos baseados em quantis;
+- otimização de hiperparâmetros com **Optuna**;
+- procedimentos de recalibração ao longo do tempo.
 
-**Conclusão:** melhorias pontuais, mas sem ganhos robustos no longo prazo no mercado americano.
+De forma geral, essas extensões produziram melhorias pontuais, mas não restauraram de forma consistente o desempenho de longo prazo no mercado americano.
 
 ---
 
-## 🧩 Código do Projeto
-
-O projeto está organizado de forma simples e direta:
+## 🧩 Código do projeto
 
 - `funcoes.py`  
-  Contém todas as funções principais utilizadas ao longo do projeto, incluindo:
-  - PCA e construção de fatores
-  - Estimação do processo OU
-  - Cálculo de s-score
-  - Construção de portfólio
-  - Backtesting
+  Reúne as principais funções do projeto, incluindo rotinas de PCA, estimação do processo OU, cálculo dos sinais, construção de portfólio e backtesting.
 
 - `run_backtest.py`  
-  Script responsável pela execução da estratégia no **mercado norte-americano**
+  Executa os experimentos e backtests para o **mercado norte-americano**.
 
 - `run_backtest_br.py`  
-  Script responsável pela execução da estratégia no **mercado brasileiro**
+  Executa os experimentos e backtests para o **mercado brasileiro**.
 
 ---
 
 ## 📦 Dependências principais
 
-- numpy  
-- pandas  
-- scikit-learn  
-- statsmodels  
-- matplotlib  
-- optuna  
+- `numpy`
+- `pandas`
+- `statsmodels`
+- `matplotlib`
+- `optuna`
 
 ---
 
 ## 📈 Métricas avaliadas
 
-- Sharpe Ratio  
-- CAGR  
-- Drawdown  
-- Turnover  
-- Volatilidade  
+- Sharpe Ratio
+- CAGR
+- Drawdown
+- Turnover
+- Volatilidade
 
 ---
 
 ## 📚 Referências
 
-- Avellaneda, M., & Lee, J. (2008). *Statistical Arbitrage in the U.S. Equities Market*  
-- Gatev, Goetzmann & Rouwenhorst (2006)  
-- Vidyamurthy (2004)  
+- AVELLANEDA, M.; LEE, J.-H. *Statistical arbitrage in the U.S. equities market*. SSRN Electronic Journal, 2008. Disponível em: <https://ssrn.com/abstract=1153505>.
 
-- KUMAR, N. *Advantages and Disadvantages of Principal Component Analysis in Machine Learning*. 2019.  
-  ⟨http://theprofessionalspoint.blogspot.com/2019/03/advantages-anddisadvantages-of-4.html⟩  
+- GATEV, E.; GOETZMANN, W. N.; ROUWENHORST, K. G. *Pairs trading: Performance of a relative-value arbitrage rule*. **Review of Financial Studies**, v. 19, n. 3, p. 797–827, 2006.
 
-- WANG, J. et al. *A novel combination of PCA and machine learning techniques to select the most important factors for predicting tunnel construction performance*.  
-  Buildings, v. 12, n. 7, 2022.  
-  ⟨https://www.mdpi.com/2075-5309/12/7/919⟩  
+- VIDYAMURTHY, G. *Pairs Trading: Quantitative Methods and Analysis*. Hoboken: Wiley, 2004.
+
+- KUMAR, N. *Advantages and Disadvantages of Principal Component Analysis in Machine Learning*. 2019. Disponível em: <http://theprofessionalspoint.blogspot.com/2019/03/advantages-anddisadvantages-of-4.html>. Acesso em: 15 abr. 2021.
+
+- WANG, J. et al. *A novel combination of PCA and machine learning techniques to select the most important factors for predicting tunnel construction performance*. **Buildings**, v. 12, n. 7, 2022. ISSN 2075-5309. Disponível em: <https://www.mdpi.com/2075-5309/12/7/919>.
 
 ---
 
 ## 👨‍💻 Autor
 
 **Sávio Amaral**  
-FGV EMAp — Mestrado em Matemática Aplicada e Ciência de Dados  
-
----
-
-## 📬 Contato
-
-Se quiser discutir o projeto ou estratégias quantitativas, fique à vontade para entrar em contato.
+FGV EMAp — Mestrado em Matemática Aplicada e Ciência de Dados
 
 ---
 
